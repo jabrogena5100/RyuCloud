@@ -22,10 +22,36 @@ type Config struct {
 	CookieSecure      bool
 	TrustedOrigins    []string
 	EnableAPIDocs     bool
-	QueueBackend      string
+	QueueBackend      string // "disabled", "memory" or "redis"
 	StorageBackend    string // "disabled" or "s3"
 	S3                S3Config
 	Upload            UploadConfig
+	Redis             RedisConfig
+	Worker            WorkerConfig
+}
+
+// RedisConfig configures the job queue transport used when QUEUE_BACKEND=redis.
+type RedisConfig struct {
+	URL string // e.g. redis://redis:6379/0
+}
+
+// WorkerConfig tunes the video-processing worker. The API reads MaxAttempts too,
+// because it stamps new jobs with it.
+type WorkerConfig struct {
+	Concurrency   int           // jobs processed at once (each runs FFmpeg)
+	MaxAttempts   int           // total tries per job before it is failed for good
+	RetryBase     time.Duration // first retry delay; doubles each attempt
+	RetryMax      time.Duration // cap on the retry delay
+	Lease         time.Duration // how long a claimed job stays owned without a heartbeat
+	SweepInterval time.Duration // how often to look for due or abandoned jobs
+	RepublishAge  time.Duration // do not re-send a job to the queue more often than this
+	ShutdownGrace time.Duration // how long in-flight jobs may finish after SIGTERM
+	Timeout       time.Duration // hard limit for processing one job
+	MaxDuration   time.Duration // longest source video accepted
+	FFmpegThreads int           // threads per FFmpeg process
+	FFmpegPath    string
+	FFprobePath   string
+	TempDir       string
 }
 
 // S3Config configures the S3-compatible object store: MinIO locally, AWS S3 later.
@@ -100,10 +126,19 @@ func Load() (Config, error) {
 	}
 	cfg.SessionTTL = time.Duration(hours) * time.Hour
 
+	cfg.Redis = RedisConfig{URL: os.Getenv("REDIS_URL")}
 	switch cfg.QueueBackend {
 	case "disabled", "memory":
+	case "redis":
+		if u, err := url.Parse(cfg.Redis.URL); err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
+			return Config{}, errors.New("REDIS_URL must be a redis:// or rediss:// URL when QUEUE_BACKEND=redis")
+		}
 	default:
-		return Config{}, fmt.Errorf("QUEUE_BACKEND must be \"disabled\" or \"memory\", got %q", cfg.QueueBackend)
+		return Config{}, fmt.Errorf("QUEUE_BACKEND must be \"disabled\", \"memory\" or \"redis\", got %q", cfg.QueueBackend)
+	}
+
+	if cfg.Worker, err = loadWorker(); err != nil {
+		return Config{}, err
 	}
 
 	if err := loadStorage(&cfg); err != nil {
@@ -185,4 +220,68 @@ func splitOrigins(value string) []string {
 		}
 	}
 	return origins
+}
+
+// intRange reads an integer environment variable that must be within [minVal, maxVal].
+func intRange(key string, fallback, minVal, maxVal int) (int, error) {
+	n, err := strconv.Atoi(getenv(key, strconv.Itoa(fallback)))
+	if err != nil || n < minVal || n > maxVal {
+		return 0, fmt.Errorf("%s must be an integer from %d to %d", key, minVal, maxVal)
+	}
+	return n, nil
+}
+
+// loadWorker reads and validates the worker settings. Durations are given in
+// seconds (or minutes where noted) so they are easy to override in Compose.
+func loadWorker() (WorkerConfig, error) {
+	var w WorkerConfig
+	seconds := func(key string, fallback, minVal, maxVal int, dst *time.Duration) error {
+		n, err := intRange(key, fallback, minVal, maxVal)
+		if err != nil {
+			return err
+		}
+		*dst = time.Duration(n) * time.Second
+		return nil
+	}
+
+	var err error
+	if w.Concurrency, err = intRange("WORKER_CONCURRENCY", 1, 1, 16); err != nil {
+		return w, err
+	}
+	if w.MaxAttempts, err = intRange("WORKER_MAX_ATTEMPTS", 4, 1, 20); err != nil {
+		return w, err
+	}
+	if w.FFmpegThreads, err = intRange("FFMPEG_THREADS", 2, 1, 32); err != nil {
+		return w, err
+	}
+	for _, f := range []struct {
+		key                string
+		fallback, min, max int
+		dst                *time.Duration
+	}{
+		{"WORKER_RETRY_BASE_SECONDS", 30, 1, 3600, &w.RetryBase},
+		{"WORKER_RETRY_MAX_SECONDS", 900, 1, 86400, &w.RetryMax},
+		{"WORKER_LEASE_SECONDS", 120, 10, 3600, &w.Lease},
+		{"WORKER_SWEEP_SECONDS", 15, 1, 600, &w.SweepInterval},
+		{"WORKER_REPUBLISH_SECONDS", 300, 1, 86400, &w.RepublishAge},
+		{"WORKER_SHUTDOWN_GRACE_SECONDS", 60, 0, 3600, &w.ShutdownGrace},
+		{"WORKER_JOB_TIMEOUT_SECONDS", 1800, 30, 86400, &w.Timeout},
+	} {
+		if err := seconds(f.key, f.fallback, f.min, f.max, f.dst); err != nil {
+			return w, err
+		}
+	}
+	if w.RetryMax < w.RetryBase {
+		return w, errors.New("WORKER_RETRY_MAX_SECONDS must not be smaller than WORKER_RETRY_BASE_SECONDS")
+	}
+	minutes, err := intRange("WORKER_MAX_DURATION_MINUTES", 120, 1, 1440)
+	if err != nil {
+		return w, err
+	}
+	w.MaxDuration = time.Duration(minutes) * time.Minute
+
+	w.FFmpegPath = getenv("FFMPEG_PATH", "ffmpeg")
+	w.FFprobePath = getenv("FFPROBE_PATH", "ffprobe")
+	w.TempDir = getenv("WORKER_TEMP_DIR", os.TempDir())
+	return w, nil
 }

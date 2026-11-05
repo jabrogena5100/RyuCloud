@@ -11,10 +11,15 @@ const STATUS: Record<VideoStatus, { label: string; className: string; hint: stri
     className: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
     hint: "Waiting for the file to finish uploading.",
   },
-  processing: {
-    label: "Processing pending",
+  queued: {
+    label: "Queued",
     className: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-    hint: "Upload verified and stored. Transcoding isn't available yet, so this video can't be played.",
+    hint: "Upload verified. Waiting for a free processing worker.",
+  },
+  processing: {
+    label: "Processing",
+    className: "bg-indigo-100 text-indigo-900 dark:bg-indigo-950 dark:text-indigo-200",
+    hint: "Being converted to streaming formats and a thumbnail.",
   },
   ready: {
     label: "Ready",
@@ -24,7 +29,7 @@ const STATUS: Record<VideoStatus, { label: string; className: string; hint: stri
   failed: {
     label: "Failed",
     className: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-    hint: "The upload failed or expired. Delete this video and upload again.",
+    hint: "Upload or processing failed. Delete this video and upload it again.",
   },
 };
 
@@ -32,11 +37,18 @@ export function statusHint(status: VideoStatus): string {
   return STATUS[status].hint;
 }
 
-export function StatusBadge({ status }: { status: VideoStatus }) {
+/** Whether the video is still moving through the pipeline (worth polling for). */
+export function isInProgress(status: VideoStatus): boolean {
+  return status === "uploading" || status === "queued" || status === "processing";
+}
+
+export function StatusBadge({ status, progress }: { status: VideoStatus; progress?: number | null }) {
   const { label, className, hint } = STATUS[status];
+  const showPercent = status === "processing" && typeof progress === "number";
   return (
     <span title={hint} className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>
       {label}
+      {showPercent ? ` ${progress}%` : ""}
     </span>
   );
 }

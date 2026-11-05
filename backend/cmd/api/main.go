@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -72,9 +73,18 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	logger.Info("object storage", "backend", cfg.StorageBackend, "bucket", cfg.S3.Bucket)
 
+	queue, err := integrations.NewQueue(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if c, ok := queue.(io.Closer); ok {
+		defer c.Close()
+	}
+	logger.Info("job queue", "backend", cfg.QueueBackend)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           server.New(cfg, pool, logger, server.WithStorage(storage)),
+		Handler:           server.New(cfg, pool, logger, server.WithStorage(storage), server.WithQueue(queue)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

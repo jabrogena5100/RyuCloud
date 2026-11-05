@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
@@ -16,9 +16,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 const VIDEOS = [
-  makeVideo({ id: "v-processing", title: "Verified upload", status: "processing", created_at: "2026-11-05T10:00:00Z" }),
+  makeVideo({ id: "v-processing", title: "Verified upload", status: "processing", processing_progress: 40, created_at: "2026-11-05T10:00:00Z" }),
   makeVideo({ id: "v-uploading", title: "Interrupted upload", status: "uploading", created_at: "2026-11-05T11:00:00Z" }),
-  makeVideo({ id: "v-failed", title: "Expired upload", status: "failed", created_at: "2026-11-05T09:00:00Z" }),
+  makeVideo({
+    id: "v-failed",
+    title: "Expired upload",
+    status: "failed",
+    processing_error: "This video couldn't be processed: the file does not contain a video track.",
+    created_at: "2026-11-05T09:00:00Z",
+  }),
 ];
 
 beforeEach(() => {
@@ -46,9 +52,10 @@ describe("StudioPage", () => {
       "Expired upload",
     ]);
     expect(within(rows[0]).getByText("Uploading")).toBeInTheDocument();
-    expect(within(rows[1]).getByText("Processing pending")).toBeInTheDocument();
-    expect(within(rows[1]).getByText(/transcoding isn't available yet/i)).toBeInTheDocument();
+    expect(within(rows[1]).getByText("Processing 40%")).toBeInTheDocument();
+    expect(within(rows[1]).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
     expect(within(rows[2]).getByText("Failed")).toBeInTheDocument();
+    expect(within(rows[2]).getByText(/does not contain a video track/)).toBeInTheDocument();
     expect(api.listUploads).toHaveBeenCalledWith({ status: "pending" });
   });
 
@@ -81,6 +88,68 @@ describe("StudioPage", () => {
     confirm.mockReturnValueOnce(true);
     await user.click(within(rows[1]).getByRole("button", { name: "Delete" }));
     expect(api.deleteVideo).toHaveBeenCalledWith("v-processing");
+  });
+
+  it("shows queued, ready (with thumbnail and watch link) and failed states", async () => {
+    vi.mocked(api.channelVideos).mockResolvedValue({
+      items: [
+        makeVideo({ id: "v-queued", title: "Waiting", status: "queued", processing_progress: 0, created_at: "2026-11-05T12:00:00Z" }),
+        makeVideo({
+          id: "v-ready",
+          title: "Finished",
+          status: "ready",
+          duration_seconds: 65,
+          thumbnail_url: "/api/v1/videos/v-ready/thumbnail",
+          created_at: "2026-11-05T11:00:00Z",
+        }),
+      ],
+      limit: 50,
+      offset: 0,
+    });
+    const { container } = render(<StudioPage />);
+
+    const rows = await screen.findAllByRole("listitem");
+    expect(within(rows[0]).getByText("Queued")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("Waiting in queue")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("Ready")).toBeInTheDocument();
+    expect(within(rows[1]).getByRole("link", { name: "Watch" })).toHaveAttribute("href", "/watch/v-ready");
+    expect(within(rows[1]).getByText("1:05")).toBeInTheDocument();
+    expect(container.querySelector('img[src="/api/v1/videos/v-ready/thumbnail"]')).not.toBeNull();
+  });
+
+  it("polls while videos are in the pipeline and stops once they are done", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(api.channelVideos)
+      .mockResolvedValueOnce({ items: [makeVideo({ id: "v1", status: "processing", processing_progress: 10 })], limit: 50, offset: 0 })
+      .mockResolvedValue({ items: [makeVideo({ id: "v1", status: "ready" })], limit: 50, offset: 0 });
+    render(<StudioPage />);
+
+    expect(await screen.findByText("Processing 10%")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+
+    const calls = vi.mocked(api.channelVideos).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(vi.mocked(api.channelVideos).mock.calls.length).toBe(calls);
+    vi.useRealTimers();
+  });
+
+  it("does not poll when nothing is in progress", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(api.channelVideos).mockResolvedValue({ items: [makeVideo({ id: "v1", status: "ready" })], limit: 50, offset: 0 });
+    render(<StudioPage />);
+    await screen.findByText("Ready");
+
+    const calls = vi.mocked(api.channelVideos).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(vi.mocked(api.channelVideos).mock.calls.length).toBe(calls);
+    vi.useRealTimers();
   });
 
   it("shows an empty state with a link to upload", async () => {

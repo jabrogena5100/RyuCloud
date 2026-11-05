@@ -11,9 +11,10 @@
 // UPDATE ("... WHERE status = 'pending'"), so repeated, concurrent or racing
 // requests (complete vs. cancel, double-clicks, retries) are safe and idempotent.
 //
-// A verified upload moves the video to "processing", meaning "queued for the
-// transcoding worker that arrives in Phase 3". Nothing is playable before then:
-// videos only become public via status "ready".
+// A verified upload moves the video to "queued" and creates its processing job in the
+// same transaction. After the commit the job ID is published to the queue; if that
+// fails the job is still durable and a worker's sweeper finds it. Nothing is playable
+// until the worker finishes: videos only become public via status "ready".
 package uploads
 
 import (
@@ -30,6 +31,7 @@ import (
 	"github.com/jabrogena5100/RyuCloud/backend/internal/channels"
 	"github.com/jabrogena5100/RyuCloud/backend/internal/httpx"
 	"github.com/jabrogena5100/RyuCloud/backend/internal/integrations"
+	"github.com/jabrogena5100/RyuCloud/backend/internal/jobs"
 )
 
 // Upload states; the database enforces them with a CHECK constraint.
@@ -122,8 +124,9 @@ type InitiateParams struct {
 
 // Options are the upload limits.
 type Options struct {
-	MaxBytes int64
-	URLTTL   time.Duration
+	MaxBytes    int64
+	URLTTL      time.Duration
+	MaxAttempts int // processing attempts stamped on each new job
 }
 
 // Service owns the upload lifecycle. Storage sits behind an interface, so MinIO
@@ -131,11 +134,16 @@ type Options struct {
 type Service struct {
 	db      *pgxpool.Pool
 	storage integrations.ObjectStorage
+	queue   integrations.Queue
+	jobs    *jobs.Store
 	opts    Options
 }
 
-func NewService(db *pgxpool.Pool, storage integrations.ObjectStorage, opts Options) *Service {
-	return &Service{db: db, storage: storage, opts: opts}
+func NewService(db *pgxpool.Pool, storage integrations.ObjectStorage, queue integrations.Queue, opts Options) *Service {
+	if opts.MaxAttempts < 1 {
+		opts.MaxAttempts = 4
+	}
+	return &Service{db: db, storage: storage, queue: queue, jobs: jobs.NewStore(db), opts: opts}
 }
 
 const uploadColumns = `id, video_id, user_id, object_key, original_filename, content_type,
@@ -411,6 +419,7 @@ func (s *Service) Complete(ctx context.Context, id, userID string) (Upload, erro
 		return s.settled(ctx, id, userID)
 	}
 
+	var newJobID string // set only by the request that actually performed the transition
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var videoID string
 		e := tx.QueryRow(ctx,
@@ -425,15 +434,37 @@ func (s *Service) Complete(ctx context.Context, id, userID string) (Upload, erro
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx,
-			`UPDATE videos SET status = 'processing', source_object_key = $2, updated_at = now() WHERE id = $1`,
-			videoID, up.objectKey)
+		if _, e = tx.Exec(ctx,
+			`UPDATE videos SET status = 'queued', source_object_key = $2, processing_error = NULL, updated_at = now() WHERE id = $1`,
+			videoID, up.objectKey); e != nil {
+			return e
+		}
+		jobID, created, e := jobs.Create(ctx, tx, videoID, up.ID, up.objectKey, s.opts.MaxAttempts)
+		if created {
+			newJobID = jobID
+		}
 		return e
 	})
 	if err != nil {
 		return Upload{}, err
 	}
+	if newJobID != "" {
+		s.publishJob(ctx, newJobID)
+	}
 	return s.settled(ctx, id, userID)
+}
+
+// publishJob tells the queue about a new job. The job row is already committed, so a
+// failure here is logged, not returned: the worker's sweeper will find the job.
+func (s *Service) publishJob(ctx context.Context, jobID string) {
+	if err := s.queue.Publish(ctx, jobID); err != nil {
+		slog.WarnContext(ctx, "could not publish processing job; a worker sweep will pick it up",
+			"request_id", httpx.RequestID(ctx), "job_id", jobID, "error", err)
+		return
+	}
+	if err := s.jobs.MarkPublished(ctx, jobID); err != nil {
+		slog.WarnContext(ctx, "could not record job publication", "job_id", jobID, "error", err)
+	}
 }
 
 // settled reloads an upload after a conditional update and reports the result

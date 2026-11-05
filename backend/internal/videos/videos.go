@@ -1,9 +1,16 @@
 // Package videos implements video metadata, visibility rules and the home feed.
 //
-// Lifecycle: draft -> uploading -> processing -> ready | failed. Creating metadata
-// makes a draft; the uploads package moves a video to uploading and then to
-// processing (a verified source file awaiting the Phase 3 worker); only the
-// worker will ever set ready, which is what makes a video publicly listable.
+// Lifecycle (the PENDING_UPLOAD/UPLOADING/QUEUED/PROCESSING/READY/FAILED states, kept
+// lower-case in the API as draft/uploading/queued/processing/ready/failed):
+//
+//	draft -> uploading -> queued -> processing -> ready
+//	                         ^           |  \-> failed
+//	                         +-- retry --+
+//
+// Creating metadata makes a draft; the uploads package moves a video to uploading and,
+// once the file is verified, to queued (creating its processing job). The worker moves
+// it to processing and finally ready (or failed). Only ready videos are playable or
+// publicly listable.
 package videos
 
 import (
@@ -26,6 +33,7 @@ import (
 const (
 	StatusDraft      = "draft"
 	StatusUploading  = "uploading"
+	StatusQueued     = "queued"
 	StatusProcessing = "processing"
 	StatusReady      = "ready"
 	StatusFailed     = "failed"
@@ -49,9 +57,13 @@ type Video struct {
 	ViewCount       int64            `json:"view_count"`
 	CreatedAt       time.Time        `json:"created_at"`
 	PublishedAt     *time.Time       `json:"published_at"`
-	// Resolved by the PlaybackURLProvider; always null until streaming exists.
+	// Resolved by the PlaybackURLProvider; null until the video has been processed.
 	ThumbnailURL *string `json:"thumbnail_url"`
 	PlaybackURL  *string `json:"playback_url"`
+	// Processing progress (0-100) while queued or processing; null otherwise.
+	ProcessingProgress *int `json:"processing_progress"`
+	// Why processing failed, in words meant for the owner; null unless failed.
+	ProcessingError *string `json:"processing_error"`
 
 	ownerID      string
 	thumbnailKey *string
@@ -90,14 +102,17 @@ func (h *Handler) Routes(mux *http.ServeMux, prefix string) {
 	mux.Handle("GET "+prefix+"/videos/{id}", h.auth.Optional(h.get))
 	mux.Handle("PATCH "+prefix+"/videos/{id}", h.auth.Required(h.update))
 	mux.Handle("DELETE "+prefix+"/videos/{id}", h.auth.Required(h.remove))
+	mux.Handle("GET "+prefix+"/videos/{id}/hls/{path...}", h.auth.Optional(h.hls))
+	mux.Handle("GET "+prefix+"/videos/{id}/thumbnail", h.auth.Optional(h.thumbnail))
 	mux.Handle("GET "+prefix+"/channels/{handle}/videos", h.auth.Optional(h.channelVideos))
 }
 
 const (
 	selectVideos = `SELECT v.id, v.title, v.description, v.status, v.visibility, v.duration_seconds,
 		v.view_count, v.created_at, v.published_at, v.thumbnail_object_key, v.hls_manifest_key,
-		c.id, c.handle, c.name, c.owner_id
-	FROM videos v JOIN channels c ON c.id = v.channel_id`
+		c.id, c.handle, c.name, c.owner_id, j.progress, v.processing_error
+	FROM videos v JOIN channels c ON c.id = v.channel_id
+	LEFT JOIN processing_jobs j ON j.video_id = v.id`
 	publiclyListed = `v.visibility = 'public' AND v.status = 'ready'`
 	newestFirst    = `ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC, v.id`
 )
@@ -107,16 +122,23 @@ type scanner interface {
 }
 
 func scanVideo(row scanner) (Video, error) {
-	var v Video
+	var (
+		v        Video
+		progress *int16
+	)
 	err := row.Scan(&v.ID, &v.Title, &v.Description, &v.Status, &v.Visibility, &v.DurationSeconds,
 		&v.ViewCount, &v.CreatedAt, &v.PublishedAt, &v.thumbnailKey, &v.manifestKey,
-		&v.Channel.ID, &v.Channel.Handle, &v.Channel.Name, &v.ownerID)
+		&v.Channel.ID, &v.Channel.Handle, &v.Channel.Name, &v.ownerID, &progress, &v.ProcessingError)
+	if progress != nil && (v.Status == StatusQueued || v.Status == StatusProcessing) {
+		p := int(*progress)
+		v.ProcessingProgress = &p
+	}
 	return v, err
 }
 
 func (h *Handler) withURLs(v Video) Video {
-	v.ThumbnailURL = h.playback.ThumbnailURL(v.thumbnailKey)
-	v.PlaybackURL = h.playback.PlaybackURL(v.manifestKey)
+	v.ThumbnailURL = h.playback.ThumbnailURL(v.ID, v.thumbnailKey)
+	v.PlaybackURL = h.playback.PlaybackURL(v.ID, v.manifestKey)
 	return v
 }
 
@@ -366,6 +388,10 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request, user auth.User)
 		if err := h.storage.DeleteObject(ctx, key); err != nil && !errors.Is(err, integrations.ErrNotConfigured) {
 			slog.WarnContext(ctx, "could not delete video object", "request_id", httpx.RequestID(ctx), "object_key", key, "error", err)
 		}
+	}
+	// Processed output (HLS renditions and thumbnail) lives under one prefix.
+	if _, err := h.storage.DeletePrefix(ctx, integrations.VideoPrefix(v.ID)); err != nil && !errors.Is(err, integrations.ErrNotConfigured) {
+		slog.WarnContext(ctx, "could not delete processed video output", "request_id", httpx.RequestID(ctx), "video_id", v.ID, "error", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil

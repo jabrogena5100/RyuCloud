@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -139,6 +140,66 @@ func (s *S3Storage) DeleteObject(ctx context.Context, objectKey string) error {
 		return fmt.Errorf("delete object: %w", err)
 	}
 	return nil
+}
+
+// GetObject opens an object for streaming. The caller closes the body; the
+// caller's context (not the short API-call timeout) bounds the transfer.
+func (s *S3Storage) GetObject(ctx context.Context, objectKey string) (ObjectReader, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return ObjectReader{}, ErrObjectNotFound
+		}
+		return ObjectReader{}, fmt.Errorf("get object: %w", err)
+	}
+	return ObjectReader{Body: out.Body, Size: aws.ToInt64(out.ContentLength), ContentType: aws.ToString(out.ContentType)}, nil
+}
+
+// PutObject uploads size bytes. The body must be seekable so the SDK can sign the payload.
+func (s *S3Storage) PutObject(ctx context.Context, objectKey, contentType string, body io.ReadSeeker, size int64) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(objectKey),
+		Body:          body,
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(size),
+	})
+	if err != nil {
+		return fmt.Errorf("put object: %w", err)
+	}
+	return nil
+}
+
+// DeletePrefix deletes every object under prefix, one request per key (outputs are
+// small in number, and this avoids the checksum requirements of batch deletes).
+func (s *S3Storage) DeletePrefix(ctx context.Context, prefix string) (int, error) {
+	if prefix == "" {
+		return 0, errors.New("refusing to delete an empty prefix")
+	}
+	deleted := 0
+	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return deleted, fmt.Errorf("list objects: %w", err)
+		}
+		for _, obj := range page.Contents {
+			if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: aws.String(s.bucket),
+				Key:    obj.Key,
+			}); err != nil {
+				return deleted, fmt.Errorf("delete object: %w", err)
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 // isNotFound recognises the "no such key" answers of S3 and S3-compatible stores.

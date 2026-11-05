@@ -23,3 +23,30 @@ describe("VideoCard", () => {
     expect(screen.getByText("4:05")).toBeInTheDocument();
   });
 });
+
+describe("VideoCard links", () => {
+  const base = {
+    id: "v1",
+    title: "Watchable",
+    channelName: "Chan",
+    views: 0,
+    publishedAt: null,
+    durationSeconds: null,
+    thumbnailUrl: "/api/v1/videos/v1/thumbnail",
+  };
+
+  it("links to the watch page when the video has an href", () => {
+    render(<VideoCard video={{ ...base, href: "/watch/v1" }} />);
+    expect(screen.getByRole("link")).toHaveAttribute("href", "/watch/v1");
+  });
+
+  it("is not a link for placeholders", () => {
+    render(<VideoCard video={base} />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("shows the generated thumbnail", () => {
+    const { container } = render(<VideoCard video={base} />);
+    expect(container.querySelector("img")).toHaveAttribute("src", "/api/v1/videos/v1/thumbnail");
+  });
+});

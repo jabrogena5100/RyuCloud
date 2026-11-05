@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// publish simulates what the processing pipeline will do in a later phase.
+// publish simulates the worker marking a video ready (see worker_test.go for the real thing).
 func publish(t *testing.T, videoID string) {
 	t.Helper()
 	execSQL(t, `UPDATE videos SET status = 'ready', visibility = 'public', published_at = now() WHERE id = $1`, videoID)
@@ -35,7 +35,7 @@ func TestCreateVideoDefaultsToPrivateDraft(t *testing.T) {
 		t.Errorf("unexpected channel summary: %v", video["channel"])
 	}
 	if video["playback_url"] != nil || video["thumbnail_url"] != nil {
-		t.Errorf("URLs should be null in Phase 1: %v", video)
+		t.Errorf("URLs should be null until a video is processed: %v", video)
 	}
 }
 

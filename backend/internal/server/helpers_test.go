@@ -28,6 +28,7 @@ type testApp struct {
 	t       *testing.T
 	url     string
 	storage *integrations.MemoryStorage // the object store behind the API (nil with newTestAppWithStorage)
+	queue   *integrations.MemoryQueue   // the job queue the API publishes to
 }
 
 // newTestApp starts the API on a local port against a freshly emptied database
@@ -45,15 +46,16 @@ func newTestAppWithStorage(t *testing.T, storage integrations.ObjectStorage) *te
 	t.Helper()
 	truncateTables(t)
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv := httptest.NewServer(server.New(testConfig, testPool, logger, server.WithStorage(storage)))
+	queue := integrations.NewMemoryQueue()
+	srv := httptest.NewServer(server.New(testConfig, testPool, logger, server.WithStorage(storage), server.WithQueue(queue)))
 	t.Cleanup(srv.Close)
-	return &testApp{t: t, url: srv.URL}
+	return &testApp{t: t, url: srv.URL, queue: queue}
 }
 
 func truncateTables(t *testing.T) {
 	t.Helper()
 	if _, err := testPool.Exec(context.Background(),
-		`TRUNCATE users, auth_sessions, channels, videos, video_uploads RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE users, auth_sessions, channels, videos, video_uploads, processing_jobs, video_renditions RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 }
@@ -165,7 +167,9 @@ func (b *browser) get(path string) response { return b.do(http.MethodGet, path, 
 
 func (b *browser) post(path string, body any) response { return b.do(http.MethodPost, path, body, nil) }
 
-func (b *browser) patch(path string, body any) response { return b.do(http.MethodPatch, path, body, nil) }
+func (b *browser) patch(path string, body any) response {
+	return b.do(http.MethodPatch, path, body, nil)
+}
 
 func (b *browser) del(path string) response { return b.do(http.MethodDelete, path, nil, nil) }
 

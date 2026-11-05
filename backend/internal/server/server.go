@@ -21,7 +21,7 @@ import (
 const (
 	// APIPrefix is the versioned base path of every route.
 	APIPrefix = "/api/v1"
-	Version   = "0.2.0"
+	Version   = "0.3.0"
 )
 
 //go:embed openapi.yaml
@@ -32,6 +32,7 @@ type Option func(*options)
 
 type options struct {
 	storage integrations.ObjectStorage
+	queue   integrations.Queue
 }
 
 // WithStorage sets the object store used for uploads. The default fails every
@@ -40,9 +41,15 @@ func WithStorage(storage integrations.ObjectStorage) Option {
 	return func(o *options) { o.storage = storage }
 }
 
+// WithQueue sets the job queue that receives processing jobs. The default fails every
+// publish; the API logs that and carries on, since jobs are durable in PostgreSQL.
+func WithQueue(queue integrations.Queue) Option {
+	return func(o *options) { o.queue = queue }
+}
+
 // New returns the API handler: versioned routes behind the shared middleware.
 func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger, opts ...Option) http.Handler {
-	o := options{storage: integrations.DisabledStorage{}}
+	o := options{storage: integrations.DisabledStorage{}, queue: integrations.DisabledQueue{}}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -53,10 +60,10 @@ func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger, opts ...Optio
 	health.NewHandler(db, Version).Routes(mux, APIPrefix)
 	authService.Routes(mux, APIPrefix)
 	channels.NewHandler(db, authService).Routes(mux, APIPrefix)
-	videos.NewHandler(db, authService, integrations.NewPlaybackProvider(), o.storage).Routes(mux, APIPrefix)
+	videos.NewHandler(db, authService, integrations.NewPlaybackProvider(APIPrefix), o.storage).Routes(mux, APIPrefix)
 
-	uploadOpts := uploads.Options{MaxBytes: cfg.Upload.MaxBytes, URLTTL: cfg.Upload.URLTTL}
-	uploads.NewHandler(uploads.NewService(db, o.storage, uploadOpts), authService, uploadOpts).Routes(mux, APIPrefix)
+	uploadOpts := uploads.Options{MaxBytes: cfg.Upload.MaxBytes, URLTTL: cfg.Upload.URLTTL, MaxAttempts: cfg.Worker.MaxAttempts}
+	uploads.NewHandler(uploads.NewService(db, o.storage, o.queue, uploadOpts), authService, uploadOpts).Routes(mux, APIPrefix)
 
 	if cfg.EnableAPIDocs {
 		mux.HandleFunc("GET "+APIPrefix+"/openapi.yaml", serveSpec)

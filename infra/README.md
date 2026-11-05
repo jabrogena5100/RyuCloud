@@ -10,7 +10,7 @@ with cost notes before anything is applied):
 | Area | Planned service | Backend seam that already exists |
 | --- | --- | --- |
 | Raw uploads, renditions, thumbnails | S3 (private buckets, presigned uploads) | `backend/internal/integrations/storage.go` (`ObjectStorage`) |
-| Transcode jobs | SQS + a separate Go/FFmpeg worker (`backend/cmd/worker`) | `backend/internal/integrations/queue.go` (`JobQueue`) |
+| Transcode jobs | SQS + a separate Go/FFmpeg worker (`backend/cmd/worker`) | `backend/internal/integrations/queue.go` (`Queue`; Redis locally, see `docs/processing.md`) |
 | Video delivery | CloudFront in front of S3 | `backend/internal/integrations/playback.go` (`PlaybackURLProvider`) |
 | Provisioning | Terraform (remote state, least-privilege IAM) | n/a |
 | CI/CD | GitHub Actions | n/a |

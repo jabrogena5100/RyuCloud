@@ -70,6 +70,7 @@ func run(m *testing.M) int {
 		EnableAPIDocs:     true,
 		QueueBackend:      "memory",
 		Upload:            config.UploadConfig{MaxBytes: 100 << 20, URLTTL: 15 * time.Minute},
+		Worker:            config.WorkerConfig{MaxAttempts: 4},
 	}
 	return m.Run()
 }

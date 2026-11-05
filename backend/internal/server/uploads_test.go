@@ -160,9 +160,9 @@ func TestUploadHappyPath(t *testing.T) {
 		t.Fatalf("unexpected completion response: %s", done.body)
 	}
 
-	// 4. PostgreSQL records a verified upload ready for processing.
+	// 4. PostgreSQL records a verified upload and queues the video for processing.
 	got := stateOf(t, uploadID)
-	if got.uploadStatus != "uploaded" || got.videoStatus != "processing" {
+	if got.uploadStatus != "uploaded" || got.videoStatus != "queued" {
 		t.Fatalf("state after complete: %+v", got)
 	}
 	if got.sourceKey == nil || *got.sourceKey != key || got.verifiedSize == nil || *got.verifiedSize != declaredLen || got.completedAt == nil {
@@ -178,18 +178,18 @@ func TestUploadHappyPath(t *testing.T) {
 	owned := alice.get("/api/v1/videos/" + videoID)
 	expectStatus(t, owned, http.StatusOK)
 	vid := owned.object(t)
-	if str(vid, "status") != "processing" || vid["playback_url"] != nil {
-		t.Errorf("video after upload should be processing and not playable: %v", vid)
+	if str(vid, "status") != "queued" || vid["playback_url"] != nil {
+		t.Errorf("video after upload should be queued and not playable: %v", vid)
 	}
 
 	// 6. Not playable, not listed: only transcoding (Phase 3) can make a video public.
 	anon := app.browser()
 	expectStatus(t, anon.get("/api/v1/videos/"+videoID), http.StatusNotFound)
 	if n := len(items(t, anon.get("/api/v1/videos"))); n != 0 {
-		t.Errorf("a processing video appeared in the public feed (%d items)", n)
+		t.Errorf("a queued video appeared in the public feed (%d items)", n)
 	}
 	if n := len(items(t, anon.get("/api/v1/channels/alice-tv/videos"))); n != 0 {
-		t.Errorf("a processing video appeared on the public channel page (%d items)", n)
+		t.Errorf("a queued video appeared on the public channel page (%d items)", n)
 	}
 }
 
@@ -454,7 +454,7 @@ func TestDuplicateCompletionIsIdempotent(t *testing.T) {
 		}
 	}
 	after := stateOf(t, up.id)
-	if after.uploadStatus != "uploaded" || after.videoStatus != "processing" || !after.completedAt.Equal(*before.completedAt) {
+	if after.uploadStatus != "uploaded" || after.videoStatus != "queued" || !after.completedAt.Equal(*before.completedAt) {
 		t.Fatalf("repeated completion changed state: before %+v after %+v", before, after)
 	}
 	if n := countOf(t, "video_uploads"); n != 1 {
@@ -494,7 +494,7 @@ func TestConcurrentCompletionsAllSucceedOnce(t *testing.T) {
 			t.Errorf("concurrent complete #%d returned %d", i, status)
 		}
 	}
-	if got := stateOf(t, up.id); got.uploadStatus != "uploaded" || got.videoStatus != "processing" {
+	if got := stateOf(t, up.id); got.uploadStatus != "uploaded" || got.videoStatus != "queued" {
 		t.Fatalf("state after concurrent completes: %+v", got)
 	}
 }
@@ -634,7 +634,7 @@ func TestCannotCancelACompletedUpload(t *testing.T) {
 	if resp.status != http.StatusConflict || resp.errorCode(t) != "upload_already_completed" {
 		t.Fatalf("cancel after complete: got %d %s", resp.status, resp.body)
 	}
-	if got := stateOf(t, up.id); got.uploadStatus != "uploaded" || got.videoStatus != "processing" || !app.storage.Has(key) {
+	if got := stateOf(t, up.id); got.uploadStatus != "uploaded" || got.videoStatus != "queued" || !app.storage.Has(key) {
 		t.Fatalf("a rejected cancel changed state: %+v", got)
 	}
 }

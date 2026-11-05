@@ -4,7 +4,8 @@
 # It does what the browser does, with curl: signs up, creates a channel, asks the API
 # for an upload session (through the Next.js proxy), PUTs a file DIRECTLY to MinIO with
 # the presigned URL, reports completion, and then proves the result in both places:
-#   - PostgreSQL: the upload is "uploaded", the video is "processing", sizes match
+#   - PostgreSQL: the upload is "uploaded", the video is queued for processing (or already
+#                being processed, if a worker is running), sizes match
 #   - MinIO:      the object exists in the private bucket with the right size
 # It also checks that tampered uploads, bad types, oversize files and anonymous
 # requests are refused.
@@ -123,8 +124,10 @@ completed_at="$(printf '%s' "$done_body" | json completed_at)"
 api POST "/uploads/$upload_id/complete" >/dev/null
 expect_eq "$(status)" 200 "completing again is idempotent -> 200"
 
-step "4. The video is processing-pending, not playable, and hidden from the public"
-expect_eq "$(api GET "/videos/$video_id" | json status)" processing "owner sees status 'processing'"
+step "4. The video is queued for processing and hidden from the public"
+video_status="$(api GET "/videos/$video_id" | json status)"
+# (random bytes are not a real video: with a worker running, "failed" is the correct end state)
+case "$video_status" in queued|processing|ready|failed) ok "owner sees status '$video_status'" ;; *) fail "unexpected video status '$video_status'" ;; esac
 code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/videos/$video_id")"
 expect_eq "$code" 404 "anonymous GET /videos/{id} -> 404"
 feed_count="$(curl -s "$BASE_URL/api/v1/videos?limit=50" | python3 -c 'import json,sys; print(sum(1 for v in json.load(sys.stdin)["items"] if v["id"]==sys.argv[1]))' "$video_id")"
@@ -139,7 +142,10 @@ FROM video_uploads u JOIN videos v ON v.id = u.video_id
 WHERE u.id = '$upload_id';
 SQL
 )"
-expect_eq "$row" "uploaded|processing|${SIZE_BYTES}|${SIZE_BYTES}|true" "video_uploads/videos row (upload|video|declared|verified|key linked)"
+case "$row" in
+  "uploaded|queued|${SIZE_BYTES}|${SIZE_BYTES}|true"|"uploaded|processing|${SIZE_BYTES}|${SIZE_BYTES}|true"|"uploaded|ready|${SIZE_BYTES}|${SIZE_BYTES}|true"|"uploaded|failed|${SIZE_BYTES}|${SIZE_BYTES}|true") ok "video_uploads/videos row is consistent ($row)" ;;
+  *) fail "unexpected video_uploads/videos row: $row" ;;
+esac
 object_key="$(db_query <<SQL
 SELECT object_key FROM video_uploads WHERE id = '$upload_id';
 SQL

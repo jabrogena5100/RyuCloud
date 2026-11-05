@@ -56,7 +56,7 @@ describe("validateFile", () => {
 
   it("rejects oversized files and says how large the limit is", () => {
     const message = validateFile(file("big.mp4", "video/mp4", LIMITS.max_bytes + 1), LIMITS);
-    expect(message).toMatch(/maximum size is 10 MB/);
+    expect(message).toMatch(/maximum size is 10\.0 MB/);
   });
 });
 

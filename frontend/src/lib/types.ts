@@ -22,7 +22,8 @@ export type Channel = {
   created_at: string;
 };
 
-export type VideoStatus = "draft" | "uploading" | "processing" | "ready" | "failed";
+/** draft = pending upload; queued = verified and waiting for a worker; processing = being transcoded. */
+export type VideoStatus = "draft" | "uploading" | "queued" | "processing" | "ready" | "failed";
 export type VideoVisibility = "public" | "unlisted" | "private";
 
 export type Video = {
@@ -38,6 +39,10 @@ export type Video = {
   published_at: string | null;
   thumbnail_url: string | null;
   playback_url: string | null;
+  /** 0-100 while queued or processing, otherwise null. */
+  processing_progress: number | null;
+  /** Owner-facing reason when status is "failed". */
+  processing_error: string | null;
 };
 
 export type VideoPage = {
@@ -97,4 +102,6 @@ export type VideoCardData = {
   publishedAt: string | null;
   durationSeconds: number | null;
   thumbnailUrl: string | null;
+  /** Where clicking the card goes; omitted for placeholders. */
+  href?: string;
 };

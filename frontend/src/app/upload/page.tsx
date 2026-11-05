@@ -240,8 +240,9 @@ export default function UploadPage() {
         <div className="flex flex-col gap-3 rounded-2xl border border-green-300 bg-green-50 p-6 dark:border-green-800 dark:bg-green-950/40">
           <h2 className="text-lg font-semibold">Upload complete</h2>
           <p className="text-sm">
-            “{completedTitle}” was uploaded and verified. It&apos;s marked <strong>processing pending</strong>: transcoding
-            isn&apos;t available yet, so it can&apos;t be played for now.
+            “{completedTitle}” was uploaded and verified. It&apos;s now <strong>queued for processing</strong>: it will be
+            converted to streaming formats and get a thumbnail, then become watchable. You can follow its progress in your
+            videos.
           </p>
           <div className="flex gap-3">
             <Link href="/studio" className={PRIMARY_BUTTON}>

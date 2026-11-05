@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/jabrogena5100/RyuCloud/backend/internal/config"
@@ -45,7 +46,14 @@ type ObjectInfo struct {
 	ETag        string
 }
 
-// ObjectStorage stores raw uploads (and, in later phases, renditions and thumbnails).
+// ObjectReader is an open object. The caller must close Body.
+type ObjectReader struct {
+	Body        io.ReadCloser
+	Size        int64
+	ContentType string
+}
+
+// ObjectStorage stores raw uploads, HLS renditions and thumbnails.
 type ObjectStorage interface {
 	// PresignUpload returns a time-limited URL that allows uploading exactly one object.
 	PresignUpload(ctx context.Context, req PresignRequest) (PresignedUpload, error)
@@ -53,7 +61,36 @@ type ObjectStorage interface {
 	StatObject(ctx context.Context, objectKey string) (ObjectInfo, error)
 	// DeleteObject removes an object. Deleting a missing object is not an error.
 	DeleteObject(ctx context.Context, objectKey string) error
+	// GetObject opens an object for reading, or returns ErrObjectNotFound.
+	GetObject(ctx context.Context, objectKey string) (ObjectReader, error)
+	// PutObject stores size bytes read from body (the worker's transcoding output).
+	PutObject(ctx context.Context, objectKey, contentType string, body io.ReadSeeker, size int64) error
+	// DeletePrefix removes every object whose key starts with prefix and returns how many.
+	DeletePrefix(ctx context.Context, prefix string) (int, error)
 }
+
+// Key layout. Everything lives in one private bucket; nothing is public.
+//
+//	uploads/{videoID}/{uploadID}/source     original upload (kept; never served)
+//	videos/{videoID}/hls/master.m3u8        HLS master playlist
+//	videos/{videoID}/hls/{360p}/index.m3u8  media playlist of one rendition
+//	videos/{videoID}/hls/{360p}/seg_00000.ts
+//	videos/{videoID}/thumbnail.jpg
+//
+// Derived keys depend only on the video ID, so reprocessing overwrites the same
+// keys instead of accumulating duplicates.
+
+// VideoPrefix is the key prefix of everything generated for a video.
+func VideoPrefix(videoID string) string { return "videos/" + videoID + "/" }
+
+// HLSKey is the key of a file inside a video's HLS output (rel like "360p/index.m3u8").
+func HLSKey(videoID, rel string) string { return VideoPrefix(videoID) + "hls/" + rel }
+
+// HLSMasterKey is the key of a video's master playlist.
+func HLSMasterKey(videoID string) string { return HLSKey(videoID, "master.m3u8") }
+
+// ThumbnailKey is the key of a video's generated thumbnail.
+func ThumbnailKey(videoID string) string { return VideoPrefix(videoID) + "thumbnail.jpg" }
 
 // SourceUploadKey is the key for one upload attempt of a video's source file.
 // Both IDs are server-generated UUIDs and the client's filename is never part of
@@ -76,6 +113,16 @@ func (DisabledStorage) StatObject(context.Context, string) (ObjectInfo, error) {
 
 func (DisabledStorage) DeleteObject(context.Context, string) error { return ErrNotConfigured }
 
+func (DisabledStorage) GetObject(context.Context, string) (ObjectReader, error) {
+	return ObjectReader{}, ErrNotConfigured
+}
+
+func (DisabledStorage) PutObject(context.Context, string, string, io.ReadSeeker, int64) error {
+	return ErrNotConfigured
+}
+
+func (DisabledStorage) DeletePrefix(context.Context, string) (int, error) { return 0, ErrNotConfigured }
+
 // NewStorage returns the storage backend selected by STORAGE_BACKEND.
 func NewStorage(ctx context.Context, cfg config.Config) (ObjectStorage, error) {
 	switch cfg.StorageBackend {
@@ -85,5 +132,20 @@ func NewStorage(ctx context.Context, cfg config.Config) (ObjectStorage, error) {
 		return DisabledStorage{}, nil
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", cfg.StorageBackend)
+	}
+}
+
+// NewQueue returns the queue selected by QUEUE_BACKEND: "redis" (local development),
+// "memory" (tests and single-process experiments) or "disabled".
+func NewQueue(ctx context.Context, cfg config.Config) (Queue, error) {
+	switch cfg.QueueBackend {
+	case "redis":
+		return NewRedisQueue(ctx, cfg.Redis.URL)
+	case "memory":
+		return NewMemoryQueue(), nil
+	case "disabled", "":
+		return DisabledQueue{}, nil
+	default:
+		return nil, fmt.Errorf("unknown queue backend %q", cfg.QueueBackend)
 	}
 }

@@ -81,7 +81,7 @@ describe("UploadPage", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(await screen.findByRole("heading", { name: "Upload complete" })).toBeInTheDocument();
-    expect(screen.getByText(/processing pending/i)).toBeInTheDocument();
+    expect(screen.getByText(/queued for processing/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View your videos" })).toHaveAttribute("href", "/studio");
   });
 
@@ -147,7 +147,7 @@ describe("UploadPage", () => {
     Object.defineProperty(big, "size", { value: LIMITS.max_bytes + 1 });
     await user.upload(await screen.findByLabelText("Select video file"), big);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/maximum size is 10 MB/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/maximum size is 10\.0 MB/i);
     expect(runUpload).not.toHaveBeenCalled();
   });
 

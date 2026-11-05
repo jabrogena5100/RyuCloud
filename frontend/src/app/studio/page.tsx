@@ -2,18 +2,63 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { StatusBadge, statusHint } from "@/components/StatusBadge";
+import { StatusBadge, isInProgress, statusHint } from "@/components/StatusBadge";
 import { api, describeError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { formatRelativeTime } from "@/lib/format";
+import { formatDuration, formatRelativeTime } from "@/lib/format";
 import type { Video } from "@/lib/types";
 
 type Row = { video: Video; pendingUploadId: string | null };
 
+/** How often to refresh while any video is still moving through the pipeline. (Page files may not export extras.) */
+const POLL_INTERVAL_MS = 3000;
+
 const BUTTON =
   "rounded-full border border-neutral-300 px-3 py-1 text-sm font-medium hover:bg-neutral-100 disabled:opacity-60 dark:border-neutral-700 dark:hover:bg-neutral-800";
 
-/** Creator dashboard: every video the signed-in user owns, with its upload/processing state. */
+function Thumbnail({ video }: { video: Video }) {
+  return (
+    <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded-lg bg-neutral-200 dark:bg-neutral-800 sm:w-40">
+      {video.thumbnail_url ? (
+        // Plain <img>: served by the API with the owner's session cookie.
+        <img src={video.thumbnail_url} alt="" loading="lazy" className="h-full w-full object-cover" />
+      ) : (
+        <div aria-hidden="true" className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
+          {video.status === "ready" ? "No thumbnail" : "Processing"}
+        </div>
+      )}
+      {video.duration_seconds !== null && (
+        <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1 py-0.5 text-[10px] font-medium text-white">
+          {formatDuration(video.duration_seconds)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Progress({ video }: { video: Video }) {
+  if (video.status !== "queued" && video.status !== "processing") {
+    return null;
+  }
+  const percent = video.processing_progress ?? 0;
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <div
+        role="progressbar"
+        aria-label={`Processing progress for ${video.title}`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-1.5 w-40 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800"
+      >
+        <div className="h-full bg-blue-600 transition-[width]" style={{ width: `${percent}%` }} />
+      </div>
+      <span className="text-xs text-neutral-500">{video.status === "queued" ? "Waiting in queue" : `${percent}%`}</span>
+    </div>
+  );
+}
+
+/** Creator dashboard: every video the signed-in user owns, with its live upload/processing state. */
 export default function StudioPage() {
   const { user, status } = useAuth();
   const userId = user?.id;
@@ -22,7 +67,6 @@ export default function StudioPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setError(null);
     try {
       const channels = await api.myChannels();
       const [pages, pending] = await Promise.all([
@@ -34,6 +78,7 @@ export default function StudioPage() {
         .flatMap((page) => page.items)
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
       setRows(videos.map((video) => ({ video, pendingUploadId: pendingByVideo.get(video.id) ?? null })));
+      setError(null);
     } catch (err) {
       setError(describeError(err));
     }
@@ -45,9 +90,18 @@ export default function StudioPage() {
     }
   }, [userId, load]);
 
+  // Status polling: refresh while anything is uploading, queued or processing, then stop.
+  const pipelineActive = rows?.some(({ video }) => isInProgress(video.status)) ?? false;
+  useEffect(() => {
+    if (!userId || !pipelineActive) {
+      return;
+    }
+    const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [userId, pipelineActive, load]);
+
   async function act(videoId: string, action: () => Promise<unknown>) {
     setBusyId(videoId);
-    setError(null);
     try {
       await action();
       await load();
@@ -104,16 +158,35 @@ export default function StudioPage() {
       ) : (
         <ul className="flex flex-col divide-y divide-neutral-200 rounded-2xl border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
           {rows.map(({ video, pendingUploadId }) => (
-            <li key={video.id} className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <h2 className="truncate font-medium">{video.title}</h2>
+            <li key={video.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+              <Thumbnail video={video} />
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate font-medium">
+                  {video.status === "ready" ? (
+                    <Link href={`/watch/${video.id}`} className="hover:underline">
+                      {video.title}
+                    </Link>
+                  ) : (
+                    video.title
+                  )}
+                </h2>
                 <p className="text-sm text-neutral-600 dark:text-neutral-400">
                   {video.channel.name} · {video.visibility} · {formatRelativeTime(video.created_at)}
                 </p>
-                <p className="mt-1 text-xs text-neutral-500">{statusHint(video.status)}</p>
+                {video.status === "failed" && video.processing_error ? (
+                  <p className="mt-1 text-sm text-red-700 dark:text-red-300">{video.processing_error}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-neutral-500">{statusHint(video.status)}</p>
+                )}
+                <Progress video={video} />
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <StatusBadge status={video.status} />
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <StatusBadge status={video.status} progress={video.processing_progress} />
+                {video.status === "ready" && (
+                  <Link href={`/watch/${video.id}`} className={BUTTON}>
+                    Watch
+                  </Link>
+                )}
                 {pendingUploadId && (
                   <button
                     type="button"
@@ -128,7 +201,7 @@ export default function StudioPage() {
                   type="button"
                   disabled={busyId === video.id}
                   onClick={() => {
-                    if (window.confirm(`Delete “${video.title}”? This also deletes the uploaded file.`)) {
+                    if (window.confirm(`Delete “${video.title}”? This also deletes the uploaded file and all generated streams.`)) {
                       void act(video.id, () => api.deleteVideo(video.id));
                     }
                   }}

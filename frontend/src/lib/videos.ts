@@ -9,10 +9,11 @@ export function toVideoCardData(video: Video): VideoCardData {
     publishedAt: video.published_at,
     durationSeconds: video.duration_seconds,
     thumbnailUrl: video.thumbnail_url,
+    href: video.status === "ready" ? `/watch/${video.id}` : undefined,
   };
 }
 
-/** Shown on the home page until real uploads exist (later phase). */
+/** Shown on the home page until there are real published videos. */
 export const PLACEHOLDER_VIDEOS: VideoCardData[] = [
   ["Deploying a Go API behind an AWS Application Load Balancer", "Cloud Native Notes", 128_400, 1_385],
   ["Terraform state, explained with real-world mistakes", "Infra Diaries", 48_210, 942],

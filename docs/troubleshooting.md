@@ -4,8 +4,8 @@ Things that broke while getting the Phase 3 stack (Compose, MinIO, Redis, worker
 actually caused each one, and what we did about it. Blunt on purpose: if you hit the same wall, start here.
 
 Status as of 2026-11-05: `scripts/e2e-processing-test.sh` passed all 35 checks (upload, queue, worker, FFmpeg,
-HLS playback, corrupt-file failure path). Not yet confirmed: the `CRASH_TEST=1` step, the frontend Vitest suite
-and the Go test suite after the readiness change. Each is called out below.
+HLS playback, corrupt-file failure path). Not yet confirmed: the `CRASH_TEST=1` step. The Vitest and Go failures found on
+the same day are explained in section 9.
 
 ---
 
@@ -157,13 +157,20 @@ docker compose run --rm --no-deps frontend npm test
 docker compose run --rm --no-deps frontend npm run typecheck
 ```
 
-Three Vitest tests were reported failing. We had not captured their output when this was written. To see them:
+Two Vitest tests failed (`upload.test.ts` and `upload/page.test.tsx`, "rejects ... size limit"). The tests expected
+`maximum size is 10 MB`, but `formatBytes` has always printed 10 MB as `10.0 MB` (values under 100 get one decimal;
+`format.test.ts` asserts the same). The tests were stale, not the app, so the assertions now expect `10.0 MB`.
+Everything else (98 tests) passed.
+
+To see failures in detail:
 
 ```bash
 docker compose run --rm --no-deps frontend npx vitest run --reporter=verbose 2>&1 | tail -150
 ```
 
-Update this section once they are fixed.
+**A Go test failed because the test was wrong:** `TestDeletingAVideoMidProcessingMakesTheWorkerBackOff` issued
+`DELETE` from the fake transcoder's hook, but the worker transcodes once per rendition (360p and 720p), so the hook
+ran twice and the second `DELETE` correctly got 404. The hook now deletes only once.
 
 ---
 

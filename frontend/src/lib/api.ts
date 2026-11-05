@@ -6,6 +6,7 @@ import type {
   UploadLimits,
   UploadStatus,
   User,
+  Video,
   VideoPage,
   VideoVisibility,
 } from "./types";
@@ -85,6 +86,7 @@ export const api = {
     apiFetch<Channel>("/channels", { method: "POST", body: JSON.stringify(input) }),
   channelVideos: (handle: string, { limit = 50, offset = 0 } = {}) =>
     apiFetch<VideoPage>(`/channels/${encodeURIComponent(handle)}/videos?limit=${limit}&offset=${offset}`),
+  getVideo: (id: string) => apiFetch<Video>(`/videos/${encodeURIComponent(id)}`),
   deleteVideo: (id: string) => apiFetch<void>(`/videos/${id}`, { method: "DELETE" }),
 
   uploadLimits: () => apiFetch<UploadLimits>("/uploads/limits"),

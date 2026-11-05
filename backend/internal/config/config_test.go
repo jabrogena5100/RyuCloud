@@ -10,6 +10,10 @@ func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"COOKIE_SECURE", "SESSION_TTL_HOURS", "TRUSTED_ORIGINS", "QUEUE_BACKEND", "ENABLE_API_DOCS",
+		"REDIS_URL", "WORKER_CONCURRENCY", "WORKER_MAX_ATTEMPTS", "FFMPEG_THREADS", "WORKER_RETRY_BASE_SECONDS",
+		"WORKER_RETRY_MAX_SECONDS", "WORKER_LEASE_SECONDS", "WORKER_SWEEP_SECONDS", "WORKER_REPUBLISH_SECONDS",
+		"WORKER_SHUTDOWN_GRACE_SECONDS", "WORKER_JOB_TIMEOUT_SECONDS", "WORKER_MAX_DURATION_MINUTES",
+		"WORKER_TEMP_DIR", "FFMPEG_PATH", "FFPROBE_PATH",
 		"STORAGE_BACKEND", "S3_ENDPOINT", "S3_PUBLIC_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY_ID",
 		"S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE", "UPLOAD_MAX_BYTES", "UPLOAD_URL_TTL_MINUTES",
 	} {
@@ -64,6 +68,9 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"UPLOAD_MAX_BYTES":       "10",
 		"UPLOAD_URL_TTL_MINUTES": "0",
 		"S3_USE_PATH_STYLE":      "sometimes",
+		"WORKER_CONCURRENCY":     "0",
+		"WORKER_MAX_ATTEMPTS":    "many",
+		"WORKER_LEASE_SECONDS":   "1",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -158,5 +165,52 @@ func TestLoadS3Validation(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+func TestLoadWorkerDefaults(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Worker
+	if w.Concurrency != 1 || w.MaxAttempts != 4 || w.FFmpegThreads != 2 {
+		t.Errorf("unexpected worker defaults: %+v", w)
+	}
+	if w.RetryBase != 30*time.Second || w.RetryMax != 15*time.Minute || w.Lease != 2*time.Minute {
+		t.Errorf("unexpected timing defaults: %+v", w)
+	}
+	if w.Timeout != 30*time.Minute || w.MaxDuration != 2*time.Hour || w.FFmpegPath != "ffmpeg" {
+		t.Errorf("unexpected limits: %+v", w)
+	}
+}
+
+func TestLoadRedisQueue(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("QUEUE_BACKEND", "redis")
+	t.Setenv("REDIS_URL", "redis://redis:6379/0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueueBackend != "redis" || cfg.Redis.URL != "redis://redis:6379/0" {
+		t.Errorf("unexpected queue config: %+v %+v", cfg.QueueBackend, cfg.Redis)
+	}
+
+	for _, bad := range []string{"", "localhost:6379", "http://redis"} {
+		t.Setenv("REDIS_URL", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("REDIS_URL=%q should be rejected", bad)
+		}
+	}
+}
+
+func TestLoadWorkerRetryMaxMustNotBeBelowBase(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("WORKER_RETRY_BASE_SECONDS", "60")
+	t.Setenv("WORKER_RETRY_MAX_SECONDS", "30")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error")
 	}
 }

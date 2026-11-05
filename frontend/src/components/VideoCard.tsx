@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { formatDuration, formatRelativeTime, formatViews } from "@/lib/format";
 import type { VideoCardData } from "@/lib/types";
 
@@ -11,11 +12,11 @@ function placeholderGradient(seed: string): string {
 }
 
 export function VideoCard({ video }: { video: VideoCardData }) {
-  return (
+  const card = (
     <article className="flex flex-col gap-3">
       <div className="relative aspect-video overflow-hidden rounded-xl bg-neutral-200 dark:bg-neutral-800">
         {video.thumbnailUrl ? (
-          // Plain <img>: thumbnails will come from a CDN domain configured in a later phase.
+          // Plain <img>: thumbnails are served by the API (and by a CDN in a later phase), not by next/image.
           <img src={video.thumbnailUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
         ) : (
           <div aria-hidden="true" className="h-full w-full" style={{ background: placeholderGradient(video.id) }} />
@@ -43,5 +44,13 @@ export function VideoCard({ video }: { video: VideoCardData }) {
         </div>
       </div>
     </article>
+  );
+
+  return video.href ? (
+    <Link href={video.href} className="rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+      {card}
+    </Link>
+  ) : (
+    card
   );
 }

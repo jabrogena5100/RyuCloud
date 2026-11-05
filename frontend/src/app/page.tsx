@@ -55,7 +55,7 @@ export default function HomePage() {
         >
           {feed.status === "error"
             ? "Couldn't reach the API, so sample videos are shown."
-            : "No published videos yet. These are sample cards: uploaded videos appear here once processing (a later phase) publishes them."}
+            : "No published videos yet. These are sample cards: upload a public video and it appears here once processing finishes."}
         </p>
       )}
 
