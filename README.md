@@ -371,6 +371,7 @@ Compose file sets it to `false` because local development is plain HTTP.
 - [docs/uploads.md](docs/uploads.md): upload lifecycle, state machine, security rules, S3 migration notes
 - [docs/processing.md](docs/processing.md): worker, queue, retries, crash recovery, FFmpeg settings, AWS (SQS) migration
 - [docs/api.md](docs/api.md): endpoint reference and error format
+- [docs/troubleshooting.md](docs/troubleshooting.md): what broke while building Phase 3, why, and the startup order that works
 
 ## Roadmap
 
