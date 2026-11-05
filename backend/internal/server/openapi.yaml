@@ -1,0 +1,434 @@
+openapi: 3.1.0
+info:
+  title: RyuCloud API
+  version: 0.2.0
+  description: >
+    Backend for RyuCloud, a cloud-native video platform. Authentication uses the
+    HttpOnly `sf_session` cookie set by register/login. Every error response uses the
+    Error envelope. Hand-maintained: update this file whenever a route changes.
+servers:
+  - url: /api/v1
+
+tags:
+  - name: health
+  - name: auth
+  - name: channels
+  - name: videos
+  - name: uploads
+    description: >
+      Direct-to-storage video uploads. The browser PUTs the file to a presigned URL
+      returned by `POST /uploads`; video bytes never pass through this API.
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: "Liveness: the process is serving requests"
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /health/ready:
+    get:
+      tags: [health]
+      summary: "Readiness: the database is reachable"
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Create an account and start a session
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RegisterRequest" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/UserWithCookie" }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in and start a session
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/LoginRequest" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/UserWithCookie" }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: End the current session and clear the cookie
+      responses:
+        "204": { description: Logged out }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Get the signed-in user
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+        default: { $ref: "#/components/responses/Error" }
+
+  /channels:
+    post:
+      tags: [channels]
+      summary: Create a channel
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChannelCreate" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/Channel" }
+        default: { $ref: "#/components/responses/Error" }
+  /channels/mine:
+    get:
+      tags: [channels]
+      summary: List channels owned by the signed-in user
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Channel" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /channels/{handle}:
+    parameters: [{ $ref: "#/components/parameters/Handle" }]
+    get:
+      tags: [channels]
+      summary: Get a channel by handle (case-insensitive)
+      responses:
+        "200": { $ref: "#/components/responses/Channel" }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [channels]
+      summary: Update a channel you own
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChannelUpdate" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Channel" }
+        default: { $ref: "#/components/responses/Error" }
+  /channels/{handle}/videos:
+    parameters: [{ $ref: "#/components/parameters/Handle" }]
+    get:
+      tags: [channels, videos]
+      summary: "List a channel's videos (public and ready; the owner sees all)"
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Offset" }]
+      responses:
+        "200": { $ref: "#/components/responses/VideoPage" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /videos:
+    get:
+      tags: [videos]
+      summary: "Home feed: public, ready videos, newest first"
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Offset" }]
+      responses:
+        "200": { $ref: "#/components/responses/VideoPage" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [videos]
+      summary: Create video metadata (a private draft by default)
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/VideoCreate" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/Video" }
+        default: { $ref: "#/components/responses/Error" }
+  /videos/{id}:
+    parameters: [{ $ref: "#/components/parameters/VideoID" }]
+    get:
+      tags: [videos]
+      summary: Get a video (404 unless you own it or it is ready and public/unlisted)
+      responses:
+        "200": { $ref: "#/components/responses/Video" }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [videos]
+      summary: Update a video you own
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/VideoUpdate" } } } }
+      responses:
+        "200": { $ref: "#/components/responses/Video" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [videos]
+      summary: Delete a video you own
+      security: [{ sessionCookie: [] }]
+      responses:
+        "204": { description: Deleted }
+        default: { $ref: "#/components/responses/Error" }
+
+  /uploads/limits:
+    get:
+      tags: [uploads]
+      summary: What may be uploaded (size limit, allowed types and extensions)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/UploadLimits" } } } }
+  /uploads:
+    post:
+      tags: [uploads]
+      summary: Start an upload
+      description: >
+        Validates the metadata, creates the video (status `uploading`) and an upload
+        record in one transaction, and returns a presigned URL. Upload the file with
+        exactly `target.method` to `target.url` with exactly `target.headers` and a body
+        of exactly `size_bytes` bytes before `target.expires_at`, then call
+        `POST /uploads/{id}/complete`.
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/UploadCreate" } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/InitiatedUpload" } } } }
+        "413": { description: "`file_too_large`: size_bytes exceeds the configured limit", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "415": { description: "`unsupported_media_type`: content type not allowed, or extension does not match it", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: "`too_many_uploads`: too many pending uploads for this user", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "`storage_unavailable`", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: "`storage_not_configured`", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      tags: [uploads]
+      summary: List your uploads, newest first
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/UploadStatus" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Upload" } }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        default: { $ref: "#/components/responses/Error" }
+  /uploads/{id}:
+    parameters: [{ $ref: "#/components/parameters/UploadID" }]
+    get:
+      tags: [uploads]
+      summary: Upload status
+      description: Other users' uploads are reported as `404 upload_not_found`.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Upload" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [uploads]
+      summary: Cancel a pending upload
+      description: >
+        Deletes any stored object and returns the video to `draft`. Idempotent for
+        uploads that are already cancelled, failed or expired.
+        A completed upload cannot be cancelled (`409 upload_already_completed`); delete the video instead.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "204": { description: Cancelled }
+        default: { $ref: "#/components/responses/Error" }
+  /uploads/{id}/complete:
+    parameters: [{ $ref: "#/components/parameters/UploadID" }]
+    post:
+      tags: [uploads]
+      summary: Report that the file has been uploaded
+      description: >
+        The API asks object storage for the object's real size and content type and
+        compares them with what was declared. On a match the upload becomes `uploaded`
+        and the video `processing` (queued for the future transcoding worker; it is not
+        playable). Idempotent: repeating it returns the same `200`.
+        Errors: `409 upload_incomplete` (nothing stored yet; retry), `409 upload_cancelled`,
+        `409 upload_failed`, `410 upload_expired`, `422 upload_rejected` (size/type mismatch;
+        the object is discarded), `502 storage_unavailable` (state unchanged; retry).
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Upload" }
+        default: { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: sf_session }
+
+  parameters:
+    Handle: { name: handle, in: path, required: true, schema: { type: string } }
+    VideoID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    UploadID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 24 } }
+    Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 10000, default: 0 } }
+
+  responses:
+    Error:
+      description: Error (see the code field)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    UserWithCookie:
+      description: The user; the response also sets the HttpOnly session cookie
+      headers: { Set-Cookie: { schema: { type: string } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    Channel:
+      description: OK
+      content: { application/json: { schema: { $ref: "#/components/schemas/Channel" } } }
+    Video:
+      description: OK
+      content: { application/json: { schema: { $ref: "#/components/schemas/Video" } } }
+    VideoPage:
+      description: OK
+      content: { application/json: { schema: { $ref: "#/components/schemas/VideoPage" } } }
+    Upload:
+      description: OK
+      content: { application/json: { schema: { $ref: "#/components/schemas/Upload" } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [validation_error] }
+            message: { type: string }
+            request_id: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  loc: { type: array, items: { type: string }, examples: [[body, password]] }
+                  msg: { type: string }
+                  type: { type: string }
+    Health:
+      type: object
+      properties: { status: { type: string, const: ok }, version: { type: string } }
+    RegisterRequest:
+      type: object
+      required: [email, password, display_name]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 128 }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1, maxLength: 128 }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string }
+        created_at: { type: string, format: date-time }
+    ChannelCreate:
+      type: object
+      required: [handle, name]
+      properties:
+        handle: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{2,29}$", description: Lower-cased on input; immutable }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+    ChannelUpdate:
+      type: object
+      description: Omitted fields are unchanged; explicit nulls are rejected.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+    Channel:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        handle: { type: string }
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    ChannelSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        handle: { type: string }
+        name: { type: string }
+    VideoCreate:
+      type: object
+      required: [channel_id, title]
+      properties:
+        channel_id: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+    VideoUpdate:
+      type: object
+      description: Omitted fields are unchanged; explicit nulls are rejected.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+    Visibility: { type: string, enum: [public, unlisted, private] }
+    Video:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        channel: { $ref: "#/components/schemas/ChannelSummary" }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [draft, uploading, processing, ready, failed] }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+        duration_seconds: { type: [integer, "null"] }
+        view_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        published_at: { type: [string, "null"], format: date-time }
+        thumbnail_url: { type: [string, "null"], description: Always null until streaming exists }
+        playback_url: { type: [string, "null"], description: Always null until streaming exists }
+    VideoPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Video" } }
+        limit: { type: integer }
+        offset: { type: integer }
+    UploadStatus:
+      type: string
+      enum: [pending, uploaded, failed, cancelled, expired]
+      description: >
+        pending: presigned URL issued, file not confirmed. uploaded: verified in storage.
+        failed: verification failed. cancelled: cancelled by the owner. expired: never confirmed in time.
+    UploadLimits:
+      type: object
+      properties:
+        max_bytes: { type: integer, format: int64 }
+        allowed_content_types: { type: array, items: { type: string } }
+        allowed_extensions: { type: array, items: { type: string } }
+        url_ttl_seconds: { type: integer }
+    UploadCreate:
+      type: object
+      required: [channel_id, title, filename, content_type, size_bytes]
+      properties:
+        channel_id: { type: string, format: uuid, description: A channel you own }
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 5000 }
+        visibility: { type: string, enum: [public, unlisted, private], default: private }
+        filename: { type: string, minLength: 1, maxLength: 255, description: Display name only; never used in storage keys }
+        content_type: { type: string, examples: [video/mp4] }
+        size_bytes: { type: integer, format: int64, minimum: 1, description: Exact size of the file in bytes }
+    Upload:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        video_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/UploadStatus" }
+        original_filename: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        failure_reason: { type: [string, "null"] }
+        expires_at: { type: string, format: date-time, description: When the presigned URL stops working }
+        completed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+    UploadTarget:
+      type: object
+      properties:
+        method: { type: string, examples: [PUT] }
+        url: { type: string, description: Presigned object-storage URL (browser-reachable) }
+        headers: { type: object, additionalProperties: { type: string }, description: Send exactly these headers }
+        expires_at: { type: string, format: date-time }
+    InitiatedUpload:
+      type: object
+      properties:
+        upload: { $ref: "#/components/schemas/Upload" }
+        video:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            title: { type: string }
+            status: { type: string, examples: [uploading] }
+            visibility: { type: string }
+        target: { $ref: "#/components/schemas/UploadTarget" }

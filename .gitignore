@@ -1,0 +1,31 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Go
+/backend/bin/
+*.test
+coverage.out
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+
+# Terraform (later phases)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
