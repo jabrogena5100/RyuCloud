@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>RyuCloud dragon</title>
+  <rect width="64" height="64" rx="14" fill="#1e293b"/>
+  <!-- horns and crest -->
+  <path d="M18 22 L11 6 L27 16 Z" fill="#f59e0b" stroke="#b45309" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M46 22 L53 6 L37 16 Z" fill="#f59e0b" stroke="#b45309" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M28 15 L32 7 L36 15 Z" fill="#fbbf24" stroke="#b45309" stroke-width="1.5" stroke-linejoin="round"/>
+  <!-- side fins -->
+  <path d="M11 30 L2 25 L7 40 Z" fill="#16a34a" stroke="#14532d" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M53 30 L62 25 L57 40 Z" fill="#16a34a" stroke="#14532d" stroke-width="1.5" stroke-linejoin="round"/>
+  <!-- head and snout -->
+  <ellipse cx="32" cy="35" rx="22" ry="20" fill="#22c55e" stroke="#14532d" stroke-width="2"/>
+  <ellipse cx="32" cy="44" rx="13" ry="9" fill="#86efac" stroke="#14532d" stroke-width="1.5"/>
+  <circle cx="27.5" cy="42.5" r="1.7" fill="#14532d"/>
+  <circle cx="36.5" cy="42.5" r="1.7" fill="#14532d"/>
+  <path d="M26 48.5 Q32 53 38 48.5" fill="none" stroke="#14532d" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- eyes -->
+  <ellipse cx="22" cy="31" rx="6" ry="7" fill="#fff" stroke="#14532d" stroke-width="1.5"/>
+  <ellipse cx="42" cy="31" rx="6" ry="7" fill="#fff" stroke="#14532d" stroke-width="1.5"/>
+  <circle cx="23.5" cy="32" r="3.6" fill="#0f172a"/>
+  <circle cx="40.5" cy="32" r="3.6" fill="#0f172a"/>
+  <circle cx="24.7" cy="30.6" r="1.2" fill="#fff"/>
+  <circle cx="41.7" cy="30.6" r="1.2" fill="#fff"/>
+  <!-- cheeks -->
+  <circle cx="14" cy="42" r="3.2" fill="#fb7185" opacity="0.55"/>
+  <circle cx="50" cy="42" r="3.2" fill="#fb7185" opacity="0.55"/>
+</svg>

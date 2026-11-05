@@ -84,11 +84,28 @@ export const StudioIcon = (p: IconProps) => (
   </Icon>
 );
 
-export function LogoMark() {
+/** RyuCloud's mascot: a cartoon dragon head (also used as the favicon: see app/icon.svg). */
+export function LogoMark({ className = "h-8 w-8" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 32 24" aria-hidden="true" className="h-6 w-8">
-      <rect width="32" height="24" rx="6" className="fill-red-600" />
-      <path d="M13 7.5v9l7.5-4.5z" className="fill-white" />
+    <svg viewBox="0 0 64 64" aria-hidden="true" className={className}>
+      <path d="M18 22 L11 6 L27 16 Z" fill="#f59e0b" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round"/>
+      <path d="M46 22 L53 6 L37 16 Z" fill="#f59e0b" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round"/>
+      <path d="M28 15 L32 7 L36 15 Z" fill="#fbbf24" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round"/>
+      <path d="M11 30 L2 25 L7 40 Z" fill="#16a34a" stroke="#14532d" strokeWidth="1.5" strokeLinejoin="round"/>
+      <path d="M53 30 L62 25 L57 40 Z" fill="#16a34a" stroke="#14532d" strokeWidth="1.5" strokeLinejoin="round"/>
+      <ellipse cx="32" cy="35" rx="22" ry="20" fill="#22c55e" stroke="#14532d" strokeWidth="2"/>
+      <ellipse cx="32" cy="44" rx="13" ry="9" fill="#86efac" stroke="#14532d" strokeWidth="1.5"/>
+      <circle cx="27.5" cy="42.5" r="1.7" fill="#14532d"/>
+      <circle cx="36.5" cy="42.5" r="1.7" fill="#14532d"/>
+      <path d="M26 48.5 Q32 53 38 48.5" fill="none" stroke="#14532d" strokeWidth="1.8" strokeLinecap="round"/>
+      <ellipse cx="22" cy="31" rx="6" ry="7" fill="#fff" stroke="#14532d" strokeWidth="1.5"/>
+      <ellipse cx="42" cy="31" rx="6" ry="7" fill="#fff" stroke="#14532d" strokeWidth="1.5"/>
+      <circle cx="23.5" cy="32" r="3.6" fill="#0f172a"/>
+      <circle cx="40.5" cy="32" r="3.6" fill="#0f172a"/>
+      <circle cx="24.7" cy="30.6" r="1.2" fill="#fff"/>
+      <circle cx="41.7" cy="30.6" r="1.2" fill="#fff"/>
+      <circle cx="14" cy="42" r="3.2" fill="#fb7185" opacity="0.55"/>
+      <circle cx="50" cy="42" r="3.2" fill="#fb7185" opacity="0.55"/>
     </svg>
   );
 }
