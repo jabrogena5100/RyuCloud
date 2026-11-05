@@ -47,11 +47,21 @@ POLICY
 
 mc admin policy create local ryucloud-app /tmp/ryucloud-app-policy.json
 mc admin user add local "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY"
-# Pure-shell check (the mc image has no grep): attach the policy only if not attached yet.
-user_info=$(mc admin user info local "$S3_ACCESS_KEY_ID")
-case "$user_info" in
-  *ryucloud-app*) ;;
-  *) mc admin policy attach local ryucloud-app --user "$S3_ACCESS_KEY_ID" ;;
-esac
+# Attach the policy unless it is already attached. Pure shell (the mc image has no grep).
+# Match the "PolicyName:" line only: the "AccessKey:" line also contains "ryucloud-app" whenever
+# S3_ACCESS_KEY_ID uses the default name, and matching it would skip the attach (uploads then fail 403).
+has_policy() {
+  case "$(mc --no-color admin user info local "$S3_ACCESS_KEY_ID")" in
+    *"PolicyName: ryucloud-app"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if ! has_policy; then
+  mc admin policy attach local ryucloud-app --user "$S3_ACCESS_KEY_ID"
+fi
+if ! has_policy; then
+  echo "Policy ryucloud-app is not attached to user '$S3_ACCESS_KEY_ID'" >&2
+  exit 1
+fi
 
 echo "Bucket '$S3_BUCKET' is ready and private; application user '$S3_ACCESS_KEY_ID' is configured."
