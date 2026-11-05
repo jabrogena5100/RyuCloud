@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/jabrogena5100/RyuCloud/backend/internal/database"
 )
 
 func TestLiveness(t *testing.T) {
@@ -17,6 +20,24 @@ func TestLiveness(t *testing.T) {
 func TestReadinessChecksDatabase(t *testing.T) {
 	resp := newTestApp(t).browser().get("/api/v1/health/ready")
 	expectStatus(t, resp, http.StatusOK)
+}
+
+// TestMain migrates up, all the way down and up again, so goose's history holds rollback rows:
+// the applied version must still come out as the newest migration.
+func TestReadinessReportsTheMigrationVersion(t *testing.T) {
+	expected, err := database.ExpectedSchemaVersion()
+	if err != nil || expected < 3 {
+		t.Fatalf("expected schema version = %d, %v", expected, err)
+	}
+	applied, err := database.AppliedSchemaVersion(context.Background(), testPool)
+	if err != nil || applied != expected {
+		t.Fatalf("applied schema version = %d (%v), want %d", applied, err, expected)
+	}
+	resp := newTestApp(t).browser().get("/api/v1/health/ready")
+	expectStatus(t, resp, http.StatusOK)
+	if got, _ := resp.object(t)["schema_version"].(float64); int64(got) != expected {
+		t.Fatalf("schema_version = %v, want %d: %s", got, expected, resp.body)
+	}
 }
 
 func TestOpenAPISpecAndDocsAreServed(t *testing.T) {

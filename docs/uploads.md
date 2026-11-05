@@ -1,4 +1,4 @@
-# Video uploads (Phase 2)
+# Video uploads (Phase 2; processing is in [processing.md](processing.md))
 
 Uploads go **browser → object storage directly**. The Go API only issues a
 time-limited, single-object permission (a presigned URL) and later verifies what
@@ -28,14 +28,15 @@ which is what makes repeated, concurrent and racing requests safe.
 | Upload state | Meaning | Video status set |
 | --- | --- | --- |
 | `pending` | Presigned URL issued; file not confirmed | `uploading` |
-| `uploaded` | API verified the stored object matches what was declared | `processing` ("processing pending": waits for the Phase 3 worker) |
+| `uploaded` | API verified the stored object matches what was declared | `queued` (a processing job is created in the same transaction; the worker takes it from there) |
 | `failed` | Stored object had the wrong size or type; it was deleted | `failed` |
 | `cancelled` | Owner cancelled; any stored object was deleted | `draft` |
 | `expired` | Never confirmed within the window; any stored object was deleted | `failed` |
 
-**A video is never playable or publicly listed after Phase 2.** Public visibility
-requires `status = 'ready'`, which only the future transcoding worker will set.
-`processing` therefore means "verified source file stored, waiting to be transcoded".
+**An upload alone never makes a video playable or publicly listed.** Public visibility
+requires `status = 'ready'`, which only the processing worker sets, after transcoding. A
+verified upload leaves the video `queued`; the worker moves it to `processing` and then
+`ready` or `failed`.
 
 ### Idempotency and races
 
@@ -107,6 +108,22 @@ what makes the URL work. On AWS, leave both endpoints empty and use an IAM role.
 3. Set `S3_BUCKET`, `S3_REGION`; leave `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT` and the keys empty; grant the
    API task role `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` on `uploads/*`.
 
+## Local MinIO image and permissions
+
+- MinIO, Inc. removed `minio/minio` and `minio/mc` from Docker Hub in 2026 and quay.io now requires a login, so
+  Compose uses the community fork **Silo** (`pgsty/minio`, `pgsty/mc`; AGPLv3, not affiliated with MinIO, Inc.),
+  pinned by release tag **and** digest. It keeps the same S3 API, console and `MINIO_*` settings. Treat it as a
+  local stand-in for S3 only; production uses AWS S3.
+- `minio-init` creates the app user and attaches a bucket-scoped policy. It checks for the `PolicyName:` line of
+  `mc admin user info`, not just the policy name anywhere in the output: the access key can have the same name as
+  the policy, and a looser check silently skipped the attach (uploads then fail with 403 `AccessDenied`).
+  Re-running `docker compose run --rm minio-init` is safe and repairs a user without the policy.
+- Presigned URLs point at `S3_PUBLIC_ENDPOINT` (`http://localhost:9000`), so **the machine running the browser
+  must reach MinIO as `localhost:9000`**. Ports are published on `127.0.0.1` of the Docker host. A browser on the
+  same machine works. A browser on another machine (for example the host of a VirtualBox VM) needs an SSH tunnel
+  (`ssh -L 3000:localhost:3000 -L 9000:localhost:9000 user@vm`), because a VirtualBox NAT port-forward does not
+  reach a port bound to the guest's loopback.
+
 ## CORS in local development
 
 The page is served from `http://localhost:3000`, but the file is PUT to `http://localhost:9000`, so the
@@ -130,9 +147,10 @@ See the README ("Verify uploads end to end") or run `bash scripts/e2e-upload-tes
 
 - **Single-part uploads only**: one `PUT` per file, up to `UPLOAD_MAX_BYTES` (default 1 GiB, hard maximum 5 GiB).
   There is no resume after a dropped connection; the user starts again. Multipart/resumable uploads are future work.
-- Content is not inspected: a file with an allowed type, extension and size is accepted even if it is not a
-  decodable video. Phase 3 (FFmpeg) is where invalid media will be detected and the video marked `failed`.
+- The upload step does not inspect content: a file with an allowed type, extension and size is accepted even if it
+  is not a decodable video. The worker's ffprobe step detects that and marks the video `failed` with an explanation.
 - Expiry is lazy (no background job) and orphaned objects rely on a future lifecycle rule.
 - A user can have several uploads for different videos at once, but cannot re-upload into the same video: a failed
   or cancelled upload means deleting the video and starting a new one.
-- Nothing is enqueued for processing yet (`QUEUE_BACKEND` is untouched); Phase 3 will enqueue when an upload becomes `uploaded`.
+- Completing an upload enqueues processing (see [processing.md](processing.md)). If the queue is down the upload still
+  succeeds and the worker's sweeper picks the job up later.

@@ -13,8 +13,8 @@ to turn both off.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/health` | none | Liveness. `{"status": "ok", "version": "0.2.0"}` |
-| GET | `/health/ready` | none | Readiness: also runs `SELECT 1`. `503 database_unavailable` if the DB is down |
+| GET | `/health` | none | Liveness. `{"status": "ok", "version": "0.3.0"}` |
+| GET | `/health/ready` | none | Readiness: PostgreSQL answers **and** the applied migration version is at least the newest one embedded in this build (`schema_version` in the response). `503 database_unavailable` if the DB is down; `503 migrations_pending` until `api migrate up` has run. Compose's own health check uses the plain `/health` so a container is not restarted while you migrate |
 
 ## Auth
 
@@ -53,10 +53,18 @@ Channel object: `{id, owner_id, handle, name, description, created_at}`.
 | POST | `/videos` | required (channel owner) | Create draft metadata `{channel_id, title (1-100), description?, visibility?}` |
 | GET | `/videos/{id}` | optional | `404 video_not_found` unless viewable (see below) |
 | PATCH | `/videos/{id}` | required (owner) | Update `{title?, description?, visibility?}` |
-| DELETE | `/videos/{id}` | required (owner) | `204` |
+| DELETE | `/videos/{id}` | required (owner) | `204`. Also deletes the stored upload and all generated HLS/thumbnail objects |
+| GET | `/videos/{id}/hls/{path}` | optional | HLS file of a **ready** video, streamed from private storage. `path` is `master.m3u8`, `{N}p/index.m3u8` or `{N}p/seg_NNNNN.ts`; anything else is `404` |
+| GET | `/videos/{id}/thumbnail` | optional | JPEG poster of a ready video |
 
 Viewable means the caller owns it, or it is `ready` and `public`/`unlisted`. A
 non-owner mutating a viewable video gets `403`; one they can't see gets `404`.
+
+The two media routes apply the same rule (and return `404 media_not_found` for a video that is not ready or has
+no thumbnail). They exist so storage can stay private in local development; use `playback_url` /
+`thumbnail_url` instead of building the paths, because a later phase serves them from a CDN. Responses carry
+`Content-Type: application/vnd.apple.mpegurl` (playlists), `video/mp2t` (segments) or `image/jpeg`, plus
+`X-Content-Type-Options: nosniff`. The browser's player sends the session cookie automatically.
 
 Video object:
 
@@ -66,16 +74,22 @@ Video object:
   "channel": {"id": "uuid", "handle": "alice-tv", "name": "Alice TV"},
   "title": "Intro to S3",
   "description": "",
-  "status": "draft",            // draft | uploading | processing | ready | failed
+  "status": "draft",            // draft | uploading | queued | processing | ready | failed
   "visibility": "private",      // public | unlisted | private
   "duration_seconds": null,
   "view_count": 0,
   "created_at": "2026-11-04T12:00:00Z",
   "published_at": null,
-  "thumbnail_url": null,        // filled by the playback provider in a later phase
-  "playback_url": null
+  "thumbnail_url": null,        // set once ready: /api/v1/videos/{id}/thumbnail
+  "playback_url": null,         // set once ready: /api/v1/videos/{id}/hls/master.m3u8
+  "processing_progress": null,  // 0-100 while queued/processing, otherwise null
+  "processing_error": null      // owner-facing reason when status is "failed"
 }
 ```
+
+Lifecycle: `draft → uploading → queued → processing → ready | failed`. `queued` means the upload was
+verified and a processing job exists (also while waiting to retry); `processing` means a worker is transcoding.
+See [processing.md](processing.md).
 
 List responses: `{"items": [Video...], "limit": 24, "offset": 0}`.
 
@@ -109,8 +123,10 @@ All routes need a session except `/uploads/limits`. Other users' uploads are alw
 Send the file with exactly `target.method` to `target.url`, with exactly `target.headers` and a body of exactly
 `size_bytes` bytes (no cookies, not through `/api/v1`). Then call `complete`.
 
-After a successful `complete` the video's `status` is `processing`: verified and stored, **not playable**, and
-not visible to anyone but its owner until a later phase publishes it.
+After a successful `complete` the video's `status` is `queued`: verified and stored, with a processing job
+created in the same transaction and published to the worker queue. It is **not playable**, and invisible to
+everyone but its owner, until the worker finishes (`ready`). Poll `GET /videos/{id}` (or the channel video list)
+for `status` and `processing_progress`.
 
 ## Errors
 
@@ -132,7 +148,7 @@ Every non-2xx response uses this envelope, and every response carries an
 | --- | --- |
 | 401 | `not_authenticated`, `invalid_credentials` |
 | 403 | `forbidden`, `untrusted_origin` (state-changing request from an origin not in `TRUSTED_ORIGINS`) |
-| 404 | `not_found` (unknown route), `channel_not_found`, `video_not_found`, `upload_not_found` |
+| 404 | `not_found` (unknown route), `channel_not_found`, `video_not_found`, `upload_not_found`, `media_not_found` |
 | 405 | `method_not_allowed` (with an `Allow` header) |
 | 409 | `email_taken`, `handle_taken`, `upload_incomplete` (nothing stored yet; retry), `upload_cancelled`, `upload_failed`, `upload_already_completed` |
 | 410 | `upload_expired` |
@@ -141,7 +157,7 @@ Every non-2xx response uses this envelope, and every response carries an
 | 422 | `upload_rejected` (stored object did not match the declared size/type; it was discarded), `validation_error`: `details` lists every problem in the body (`loc: ["body", field]`), query (`["query", name]`) or path (`["path", name]`, e.g. a malformed UUID). Submitted values are never echoed. Explicit `null`s are rejected. |
 | 429 | `too_many_uploads` (10 pending uploads per user) |
 | 500 | `internal_error` |
-| 502 | `storage_unavailable` (object storage failed; state unchanged, retry) |
+| 502 | `storage_unavailable` (object storage failed; state unchanged, retry; also from the media routes) |
 | 503 | `database_unavailable`, `storage_not_configured` |
 
 ## Example (curl)

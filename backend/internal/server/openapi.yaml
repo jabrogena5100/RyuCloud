@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RyuCloud API
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Backend for RyuCloud, a cloud-native video platform. Authentication uses the
     HttpOnly `sf_session` cookie set by register/login. Every error response uses the
@@ -29,7 +29,11 @@ paths:
   /health/ready:
     get:
       tags: [health]
-      summary: "Readiness: the database is reachable"
+      summary: "Readiness: the database is reachable and migrated to the version this build expects"
+      description: >
+        Returns 503 with code `database_unavailable` when PostgreSQL cannot be reached, or
+        `migrations_pending` while the applied schema is older than the migrations embedded in this
+        build (run `api migrate up`). A schema newer than the build is still ready.
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
         "503": { $ref: "#/components/responses/Error" }
@@ -150,6 +154,39 @@ paths:
       responses:
         "204": { description: Deleted }
         default: { $ref: "#/components/responses/Error" }
+  /videos/{id}/hls/{path}:
+    parameters:
+      - { $ref: "#/components/parameters/VideoID" }
+      - { name: path, in: path, required: true, schema: { type: string, examples: ["master.m3u8", "720p/index.m3u8", "720p/seg_00000.ts"] }, description: "Only files produced by the worker are served: master.m3u8, {height}p/index.m3u8 and {height}p/seg_NNNNN.ts" }
+    get:
+      tags: [videos]
+      summary: HLS playlist or segment of a ready video
+      description: >
+        Local-development media delivery from private object storage, with the same
+        visibility rules as `GET /videos/{id}` (owner always; others only when the
+        video is ready and public or unlisted). `404` otherwise, including for videos
+        that are not ready. A CDN replaces this route in a later phase; clients should
+        use `playback_url` rather than building this path.
+      security: [{ sessionCookie: [] }, {}]
+      responses:
+        "200":
+          description: The file, with `Content-Type` application/vnd.apple.mpegurl (playlists) or video/mp2t (segments)
+          content:
+            application/vnd.apple.mpegurl: { schema: { type: string } }
+            video/mp2t: { schema: { type: string, format: binary } }
+        "404": { description: "`video_not_found` or `media_not_found`", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: "`storage_unavailable`", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /videos/{id}/thumbnail:
+    parameters: [{ $ref: "#/components/parameters/VideoID" }]
+    get:
+      tags: [videos]
+      summary: Poster image of a ready video
+      description: Same visibility rules as `GET /videos/{id}`. `404 media_not_found` if the video has no thumbnail.
+      security: [{ sessionCookie: [] }, {}]
+      responses:
+        "200": { description: JPEG image, content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
 
   /uploads/limits:
     get:
@@ -226,8 +263,9 @@ paths:
       description: >
         The API asks object storage for the object's real size and content type and
         compares them with what was declared. On a match the upload becomes `uploaded`
-        and the video `processing` (queued for the future transcoding worker; it is not
-        playable). Idempotent: repeating it returns the same `200`.
+        and the video `queued`: a processing job is created in the same transaction and
+        sent to the worker queue. Idempotent: repeating it returns the same `200` and does
+        not create a second job.
         Errors: `409 upload_incomplete` (nothing stored yet; retry), `409 upload_cancelled`,
         `409 upload_failed`, `410 upload_expired`, `422 upload_rejected` (size/type mismatch;
         the object is discarded), `502 storage_unavailable` (state unchanged; retry).
@@ -290,7 +328,10 @@ components:
                   type: { type: string }
     Health:
       type: object
-      properties: { status: { type: string, const: ok }, version: { type: string } }
+      properties:
+        status: { type: string, const: ok }
+        version: { type: string }
+        schema_version: { type: integer, description: Applied migration version (readiness only) }
     RegisterRequest:
       type: object
       required: [email, password, display_name]
@@ -362,14 +403,21 @@ components:
         channel: { $ref: "#/components/schemas/ChannelSummary" }
         title: { type: string }
         description: { type: string }
-        status: { type: string, enum: [draft, uploading, processing, ready, failed] }
+        status:
+          type: string
+          enum: [draft, uploading, queued, processing, ready, failed]
+          description: >
+            draft (pending upload) -> uploading -> queued (verified, waiting for a worker) ->
+            processing (a worker is transcoding) -> ready (playable) | failed.
         visibility: { $ref: "#/components/schemas/Visibility" }
         duration_seconds: { type: [integer, "null"] }
         view_count: { type: integer }
         created_at: { type: string, format: date-time }
         published_at: { type: [string, "null"], format: date-time }
-        thumbnail_url: { type: [string, "null"], description: Always null until streaming exists }
-        playback_url: { type: [string, "null"], description: Always null until streaming exists }
+        thumbnail_url: { type: [string, "null"], description: "Set once the video is ready. Served by GET /videos/{id}/thumbnail" }
+        playback_url: { type: [string, "null"], description: "Set once the video is ready. The HLS master playlist, served by GET /videos/{id}/hls/master.m3u8" }
+        processing_progress: { type: [integer, "null"], minimum: 0, maximum: 100, description: "While queued or processing; otherwise null" }
+        processing_error: { type: [string, "null"], description: "Why processing failed, for the owner; null unless failed" }
     VideoPage:
       type: object
       properties:

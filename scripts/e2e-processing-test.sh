@@ -18,6 +18,8 @@
 #   bash scripts/e2e-processing-test.sh
 #   KEEP=1 bash scripts/e2e-processing-test.sh     # keep the data to inspect or play it
 #   TIMEOUT=300 bash scripts/e2e-processing-test.sh
+#   CRASH_TEST=1 bash scripts/e2e-processing-test.sh   # also SIGKILL the worker mid-job and check recovery
+#                                                      # (adds ~3-6 minutes: the job's lease must expire)
 #
 # Needs: curl, python3 (JSON parsing), docker compose.
 set -euo pipefail
@@ -243,6 +245,55 @@ expect_eq "$row" "failed|1" "corrupt media failed permanently on the first attem
 [ -z "$(mc_run "mc ls --recursive local/$S3_BUCKET/videos/$bad_id/" 2>/dev/null)" ] || fail "output was stored for a failed video"
 ok "no output was stored for the failed video"
 
+crash_id=""
+if [ "${CRASH_TEST:-0}" = 1 ]; then
+  step "7. Crash recovery: SIGKILL the worker mid-job; the lease must expire and another attempt must finish it"
+  CRASH_SECONDS="${CRASH_SECONDS:-240}"        # length of the long fixture, so the job is still running when killed
+  CRASH_TIMEOUT="${CRASH_TIMEOUT:-600}"        # lease (WORKER_LEASE_SECONDS, default 120) + sweep + a full re-run
+  lease="$(env_value WORKER_LEASE_SECONDS)"; lease="${lease:-120}"
+  long="$work/long.mp4"
+  docker compose run --rm --no-deps -T --entrypoint ffmpeg worker \
+    -hide_banner -loglevel error -f lavfi -i "testsrc2=size=1280x720:rate=24" \
+    -f lavfi -i "sine=frequency=440:sample_rate=48000" -t "$CRASH_SECONDS" \
+    -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac \
+    -movflags frag_keyframe+empty_moov -f mp4 pipe:1 >"$long"
+  ok "generated a ${CRASH_SECONDS}s fixture ($(stat -c %s "$long") bytes)"
+  crash_id="$(upload_file "$long" long.mp4 'E2E crash recovery')"
+  ok "uploaded; video $crash_id"
+
+  # Wait until a worker is really transcoding (processing with some progress), then kill it hard.
+  deadline=$((SECONDS + TIMEOUT)); killed=0
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body="$(api GET "/videos/$crash_id")"
+    state="$(printf '%s' "$body" | json status)"; progress="$(printf '%s' "$body" | json processing_progress)"
+    [ "$state" = ready ] && fail "the job finished before it could be killed; rerun with a larger CRASH_SECONDS (now $CRASH_SECONDS)"
+    [ "$state" = failed ] && fail "the video failed before the crash: $body"
+    if [ "$state" = processing ] && [ "${progress:-0}" -gt 0 ]; then
+      docker compose kill -s KILL worker >/dev/null 2>&1 || fail "could not kill the worker container"
+      killed=1; break
+    fi
+    sleep 1
+  done
+  [ "$killed" = 1 ] || fail "the video never reached 'processing' with progress within ${TIMEOUT}s"
+  ok "worker SIGKILLed at ${progress}% (status=$state)"
+  docker compose up -d worker >/dev/null 2>&1 || fail "could not restart the worker"
+  ok "worker restarted; waiting for the lease (${lease}s) to expire and the sweeper to re-send the job"
+
+  crash_final="$(TIMEOUT="$CRASH_TIMEOUT" wait_for_video "$crash_id" ready)" \
+    || fail "the crashed job was not recovered: $crash_final"
+  ok "video is READY after the crash"
+  row="$(db_query <<SQL
+SELECT j.state || '|' || j.attempts || '|' || v.status FROM processing_jobs j JOIN videos v ON v.id = j.video_id WHERE v.id = '$crash_id';
+SQL
+)"
+  expect_eq "$row" "succeeded|2|ready" "recovered on a second attempt (state|attempts|video)"
+  crash_files="$(mc_run "mc ls --recursive local/$S3_BUCKET/videos/$crash_id/")"
+  for needle in master.m3u8 "360p/index.m3u8" "720p/index.m3u8" thumbnail.jpg; do
+    echo "$crash_files" | grep -q "$needle" || fail "recovered video is missing $needle"
+  done
+  ok "recovered output is complete in MinIO"
+fi
+
 if [ "${KEEP:-0}" = 1 ]; then
   step "KEEP=1: leaving the test data in place"
   echo "    sign in at $BASE_URL as $email (password: e2e-test-password), open /studio and watch '$video_id'"
@@ -250,6 +301,7 @@ else
   step "Cleanup: deleting the videos removes their stored objects"
   api DELETE "/videos/$video_id" >/dev/null; expect_eq "$(status)" 204 "deleted the processed video"
   api DELETE "/videos/$bad_id" >/dev/null; expect_eq "$(status)" 204 "deleted the failed video"
+  if [ -n "$crash_id" ]; then api DELETE "/videos/$crash_id" >/dev/null; expect_eq "$(status)" 204 "deleted the crash-recovery video"; fi
   [ -z "$(mc_run "mc ls --recursive local/$S3_BUCKET/videos/$video_id/" 2>/dev/null)" ] && ok "processed output removed from MinIO" || fail "processed output remains in MinIO"
   mc_run "mc ls --recursive local/$S3_BUCKET/uploads/$video_id/" 2>/dev/null | grep -q source && fail "the original remains in MinIO" || ok "original removed from MinIO"
 fi

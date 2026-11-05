@@ -3,12 +3,13 @@
 A cloud-native, YouTube-style video platform built as a software-engineering and
 AWS portfolio project.
 
-**Status: Phase 2 (Video uploads and object storage).** Accounts, sessions, channels,
-video metadata, and **direct-to-storage video uploads** work locally: the browser uploads
-to MinIO (S3-compatible) with a presigned URL, the API verifies the object, and PostgreSQL
-records it as ready for processing. Transcoding, queues, HLS and CDN delivery are **not**
-implemented yet, so uploaded videos stop at "processing pending" and cannot be played.
-Nothing here uses AWS or costs money. See [docs/uploads.md](docs/uploads.md).
+**Status: Phase 3 (asynchronous video processing).** Accounts, channels, **direct-to-storage uploads**
+and now **background transcoding** work locally: after the browser uploads to MinIO, a separate Go
+**worker** takes the job from a Redis queue, runs FFmpeg to produce 360p/720p **HLS** renditions and a
+thumbnail, stores them in private storage, and marks the video **ready**; the watch page plays it with
+hls.js. Jobs are tracked in PostgreSQL with retries, leases and crash recovery. CDN delivery
+(CloudFront) and AWS infrastructure are **not** implemented yet; nothing here uses AWS or costs money.
+See [docs/uploads.md](docs/uploads.md) and [docs/processing.md](docs/processing.md).
 
 | Layer | Tech |
 | --- | --- |
@@ -17,8 +18,9 @@ Nothing here uses AWS or costs money. See [docs/uploads.md](docs/uploads.md).
 | Data | PostgreSQL 17 via `pgx`, SQL migrations with `goose` (embedded in the binary) |
 | Object storage | MinIO locally, AWS SDK for Go v2 behind a storage interface (AWS S3 later by configuration) |
 | Auth | Argon2id password hashing, server-side sessions in an HttpOnly cookie |
+| Queue | Redis locally, behind a `Queue` interface (AWS SQS later). PostgreSQL holds the durable job state |
+| Worker | Go (`backend/cmd/worker`) sharing the backend's internal packages, running `ffprobe`/`ffmpeg` |
 | Local env | Docker Compose |
-| Planned worker (Phase 3) | Go, sharing the backend's internal packages |
 
 ## Repository layout
 
@@ -26,10 +28,14 @@ Nothing here uses AWS or costs money. See [docs/uploads.md](docs/uploads.md).
 frontend/                 Next.js app (UI, same-origin proxy to the API)
 backend/                  Go API (modular monolith)
   cmd/api/                entry point: `api serve` / `api migrate up|down|reset|status`
+  cmd/worker/             video-processing worker (queue consumer, FFmpeg)
   internal/auth/          users, password hashing, sessions, login/registration
   internal/channels/      channels
   internal/videos/        video metadata, visibility rules, feeds
   internal/uploads/       direct-to-storage upload lifecycle (presign, verify, cancel, expire)
+  internal/jobs/          PostgreSQL job store (claim/lease, retry, fail, sweep)
+  internal/transcode/     ffprobe/ffmpeg wrappers, rendition planning, HLS playlists
+  internal/worker/        the processing engine (concurrency, backoff, recovery, shutdown)
   internal/health/        liveness/readiness
   internal/integrations/  storage (S3/MinIO adapter), queue and playback interfaces (SQS, CloudFront later)
   internal/httpx/         error envelope, validation, middleware
@@ -68,7 +74,7 @@ docker compose build backend
 docker compose up -d db
 docker compose run --rm backend go run ./cmd/api migrate up
 
-# 4. Start everything (also starts MinIO and creates the private bucket)
+# 4. Start everything (also starts MinIO, Redis and the video worker)
 docker compose up -d
 docker compose ps
 ```
@@ -96,8 +102,9 @@ UPLOAD_URL_TTL_MINUTES=30
 ENVBLOCK
 ```
 
-Then pin the new Go dependencies (the AWS SDK) and apply the new migration. The migration only
-adds the `video_uploads` table; existing data is untouched:
+Then pin the new Go dependencies (the AWS SDK, Redis client) and apply the new migrations. They only
+add tables and columns; existing data is untouched, and any video a previous version left waiting
+("processing" with no worker) is given a job automatically:
 
 ```bash
 docker compose run --rm --no-deps backend go mod tidy
@@ -121,6 +128,46 @@ browser requests from origins listed in `TRUSTED_ORIGINS`.
 The backend container runs `go run`, which doesn't hot-reload. After editing Go
 code, restart it with `docker compose restart backend`.
 
+### Upgrading to Phase 3 (video processing)
+
+Phase 3 adds Redis, the `worker` service, new settings (all have defaults) and one frontend
+dependency (`hls.js`, the HLS player). Run these in order:
+
+```bash
+cd ~/projects/RyuCloud
+
+# 1. New settings (optional: every value has a default; this just documents them in your .env)
+grep -q '^WORKER_CONCURRENCY=' .env || cat >> .env <<ENVBLOCK
+
+# --- Video processing worker ---
+WORKER_CPUS=2
+WORKER_MEMORY=2g
+WORKER_CONCURRENCY=1
+FFMPEG_THREADS=2
+WORKER_MAX_ATTEMPTS=4
+ENVBLOCK
+docker compose config --quiet && echo CONFIG_OK
+
+# 2. Go dependencies (adds the Redis client; go.mod/go.sum are updated in ./backend)
+docker compose run --rm --no-deps backend go mod tidy
+
+# 3. Build the images (the frontend build installs the new hls.js dependency), then refresh
+#    frontend/package-lock.json so `npm ci` is reproducible again, and rebuild once more
+docker compose build
+docker compose run --rm --no-deps frontend npm install
+docker compose build frontend
+
+# 4. Database: apply migration 00003 (job + rendition tables, new "queued" status)
+docker compose up -d db
+docker compose run --rm backend go run ./cmd/api migrate up
+docker compose run --rm backend go run ./cmd/api migrate status
+
+# 5. Start everything; recreate the frontend's node_modules volume so hls.js is present
+docker compose up -d --renew-anon-volumes frontend
+docker compose up -d
+docker compose ps
+```
+
 ### Frontend lockfile (first run)
 
 `frontend/package-lock.json` isn't committed yet. Generate it once inside the
@@ -142,6 +189,10 @@ docker compose run --rm backend go test ./...
 docker compose run --rm --no-deps backend go vet ./...
 docker compose run --rm --no-deps backend gofmt -l .     # prints nothing when formatted
 
+# FFmpeg-backed tests (probe, real HLS transcode, thumbnail, cancellation). They need the ffmpeg
+# binaries, which exist in the worker image, and generate their own synthetic test video:
+docker compose run --rm --no-deps worker go test ./internal/transcode -v
+
 # Frontend
 docker compose run --rm --no-deps frontend npm test
 docker compose run --rm --no-deps frontend npm run typecheck
@@ -158,50 +209,102 @@ docker compose up -d minio minio-init
 docker compose run --rm -e S3_INTEGRATION_TEST=1 backend go test ./internal/integrations -run S3 -v
 ```
 
+The worker/queue/recovery tests (`internal/server/worker_test.go`) run the real worker, job store, schema and API
+against PostgreSQL with in-memory storage, an in-memory queue and a fake FFmpeg, so every failure path (crashes,
+retries, exhaustion, storage errors, lease loss, duplicate and concurrent deliveries, graceful shutdown) is
+deterministic. They run as part of `go test ./...`.
+
 End-to-end tests against the running stack:
 
 ```bash
 bash scripts/smoke-test.sh            # auth only
 bash scripts/e2e-upload-test.sh       # browser-equivalent upload: API -> MinIO -> PostgreSQL
+bash scripts/e2e-processing-test.sh   # the whole pipeline: upload -> Redis -> worker -> FFmpeg -> MinIO -> READY -> HLS fetched
+CRASH_TEST=1 bash scripts/e2e-processing-test.sh   # same, plus SIGKILL the worker mid-job and check the job is recovered (adds several minutes)
 ```
 
-## Verify uploads end to end (manual)
+Run the migrations **before** these scripts: `/api/v1/health/ready` answers 503 `migrations_pending` until the
+database is at the schema version this build expects, and the tests fail on missing tables if you skip it.
+If a direct upload to storage fails, the processing script prints the HTTP status and S3 error code (never the
+URL, signature or credentials).
 
-Prove that a file uploaded in the browser lands in MinIO **and** is recorded in PostgreSQL.
-Prerequisites: the stack is up (`docker compose ps` shows `db`, `minio`, `backend`, `frontend` running;
-`minio-init` runs once and exits 0), and migrations are applied.
+## Verify processing end to end (manual)
 
-1. Open http://localhost:3000 and register (or sign in).
-2. Open http://localhost:3000/upload. If you have no channel yet, create one.
-3. Drag a small `.mp4`, `.mov`, `.webm` or `.mkv` file onto the page (or use **Select video file**).
-   Keep the browser's Network tab open: the `PUT` goes to `localhost:9000` (MinIO), not `/api/v1`.
-4. Enter a title, description and visibility, then click **Upload**. You'll see progress, then
-   "Upload complete ... processing pending".
-5. Open http://localhost:3000/studio. The video shows the **Processing pending** badge. It is not
-   playable and not on the home feed, by design.
-6. Check **MinIO** has the object (you'll see `uploads/<video-id>/<upload-id>/source` and its size):
+Prove the whole pipeline in the browser: upload → MinIO → queue → worker → FFmpeg → MinIO → PostgreSQL `ready` → HLS playback.
+Prerequisites: `docker compose ps` shows `db`, `redis`, `minio`, `backend`, `worker` and `frontend` running (`minio-init`
+runs once and exits 0), and migrations are applied.
+
+You need a small video. If you don't have one, generate a 10-second test clip (no downloads, no licensing issues):
+
+```bash
+cd ~/projects/RyuCloud
+docker compose run --rm --no-deps -T --entrypoint ffmpeg worker \
+  -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=24 -f lavfi -i sine=frequency=440 \
+  -t 10 -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags frag_keyframe+empty_moov -f mp4 pipe:1 > ~/demo.mp4
+```
+
+1. Follow the worker in a second terminal: `docker compose logs -f worker`.
+2. Open http://localhost:3000, register (or sign in), then open http://localhost:3000/upload and create a channel if asked.
+3. Drag `~/demo.mp4` onto the page, enter a title, choose **Public**, and click **Upload**. The browser's Network tab
+   shows the `PUT` going to `localhost:9000` (MinIO), not `/api/v1`. You'll see "Upload complete ... queued for processing".
+4. Open http://localhost:3000/studio. The video appears as **Queued**, then **Processing NN%** with a progress bar
+   (the page refreshes itself every 3 seconds), then **Ready** with a thumbnail and a **Watch** button. In the worker
+   log you'll see `job claimed`, `source probed`, `job succeeded`.
+5. Click **Watch** (http://localhost:3000/watch/<video-id>). The video plays; in the Network tab you'll see
+   `master.m3u8`, then `360p/…` or `720p/…` playlists and `seg_NNNNN.ts` segments, all from `/api/v1/videos/<id>/hls/…`.
+6. Open http://localhost:3000: the public video is now on the home feed with its generated thumbnail.
+7. Check **MinIO** has the generated files (renditions, playlists, segments, thumbnail) and the original:
 
    ```bash
-   cd ~/projects/RyuCloud
    docker compose run --rm --no-deps --entrypoint sh minio-init -c \
-     'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc ls --recursive --summarize local/$S3_BUCKET'
+     'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc ls --recursive local/$S3_BUCKET'
    ```
 
-   Or browse http://localhost:9001 → Object Browser → `ryucloud-media`.
-7. Check **PostgreSQL** recorded it (upload `uploaded`, video `processing`, sizes equal, and the
-   video's `source_object_key` equals the upload's `object_key`):
+   Expect `uploads/<id>/<upload-id>/source` plus `videos/<id>/hls/master.m3u8`, `videos/<id>/hls/360p/…`,
+   `videos/<id>/hls/720p/…` and `videos/<id>/thumbnail.jpg`. (The console at http://localhost:9001 shows the same.)
+8. Check **PostgreSQL** (video `ready`, job `succeeded` after 1 attempt, two renditions):
 
    ```bash
    docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
-     SELECT v.title, v.status AS video_status, u.status AS upload_status, u.original_filename,
-            u.declared_size_bytes, u.verified_size_bytes, u.object_key = v.source_object_key AS key_linked
-     FROM video_uploads u JOIN videos v ON v.id = u.video_id ORDER BY u.created_at DESC LIMIT 5;"'
+     SELECT v.title, v.status, j.state AS job, j.attempts, j.progress, v.duration_seconds,
+            (SELECT string_agg(name, chr(44) ORDER BY height) FROM video_renditions r WHERE r.video_id = v.id) AS renditions
+     FROM videos v JOIN processing_jobs j ON j.video_id = v.id ORDER BY v.created_at DESC LIMIT 5;"'
    ```
-8. Try the failure paths: pick a `.txt` file (rejected in the browser), cancel mid-upload with
-   **Cancel** (the upload row becomes `cancelled`, the video returns to `draft`, and no object remains),
-   and delete a video in the dashboard (its object disappears from MinIO).
+9. **Failure path**: upload any non-video file renamed to `.mp4` (e.g. `head -c 20000 /dev/urandom > ~/bad.mp4`). It goes
+   Queued → Processing → **Failed**, with the reason shown on the dashboard and watch page, after a single attempt.
+10. **Crash recovery** (optional): upload a larger video, and while it is **Processing** run
+    `docker compose kill worker`, then `docker compose up -d worker`. After the lease expires (up to 2 minutes) the worker
+    log shows `job re-sent to queue` and the video finishes. The job's `attempts` will be 2.
 
-The same flow without a browser: `bash scripts/e2e-upload-test.sh`.
+The same pipeline without a browser: `bash scripts/e2e-processing-test.sh`.
+
+## Operating the worker
+
+```bash
+docker compose logs -f worker                         # JSON logs: job_id, video_id, attempt, stage results
+docker compose stop worker                            # graceful: running jobs finish (≤ 60s), then are handed back
+docker compose up -d --scale worker=2                 # a second worker; safe, jobs are claimed with leases
+docker compose exec redis redis-cli llen ryucloud:jobs:ready      # messages waiting
+docker compose exec redis redis-cli llen ryucloud:jobs:inflight   # messages taken but not yet acknowledged
+
+# Jobs by state (queued / processing / retry / succeeded / failed)
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT state, count(*) FROM processing_jobs GROUP BY state;"'
+# Details of unfinished or failed jobs (stage, attempts, next retry, last error)
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT video_id, state, stage, progress, attempts, max_attempts, next_run_at, locked_by, left(last_error, 80) AS last_error FROM processing_jobs WHERE state <> '"'"'succeeded'"'"' ORDER BY updated_at DESC LIMIT 20;"'
+```
+
+**Recovering a stuck or failed video.** Stuck jobs recover by themselves (leases and the sweeper; see
+[docs/processing.md](docs/processing.md)). To re-run a job that failed for a transient reason (for example storage was down
+past the retry limit), after fixing the cause:
+
+```bash
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+  UPDATE processing_jobs SET state = '"'"'queued'"'"', attempts = 0, next_run_at = now(), last_error = NULL, finished_at = NULL, last_published_at = NULL WHERE video_id = '"'"'<VIDEO_ID>'"'"';
+  UPDATE videos SET status = '"'"'queued'"'"', processing_error = NULL WHERE id = '"'"'<VIDEO_ID>'"'"';"'
+```
+
+Replace `<VIDEO_ID>` with the video's UUID (shown in the dashboard URL of the watch page). The worker's sweeper picks it up within
+about 15 seconds. Corrupt files will simply fail again; delete those videos from the dashboard instead.
 
 ## Common tasks
 
@@ -215,24 +318,47 @@ docker compose exec db psql -U ryucloud -d ryucloud   # SQL shell (default user/
 docker compose run --rm backend go run ./cmd/api migrate up
 docker compose run --rm backend go run ./cmd/api migrate status
 
-# After changing Go dependencies
+# After changing Go dependencies (see "Go toolchain and dependency pins" below before upgrading anything)
 docker compose run --rm --no-deps backend go mod tidy
+python3 scripts/check-go-deps.py        # host-side check that every pin fits the Go version in go.mod
 
 # After changing frontend/package.json: rebuild and recreate the node_modules volume
 docker compose build frontend
 docker compose up -d --renew-anon-volumes frontend
 
 docker compose logs -f minio minio-init     # object storage logs / bucket setup output
+docker compose logs -f worker redis         # video processing / queue logs
 
 docker compose down                         # stop (keeps data)
-docker compose down -v                      # stop AND delete the database, uploaded files and cache volumes
+docker compose down -v                      # stop AND delete the database, uploaded/processed files, queue and cache volumes
 ```
+
+## Go toolchain and dependency pins
+
+All Go code builds with one toolchain: **Go 1.25** (`go 1.25.0` in `backend/go.mod`; the image tag is
+`ARG GO_VERSION=1.25.14` in `backend/Dockerfile`, shared by the dev, worker-dev and build stages; the runtime
+stages contain no Go). Containers set `GOTOOLCHAIN=local`, so Go never downloads a different toolchain.
+
+Consequence: a dependency whose own `go` line is newer than 1.25 makes `go mod tidy` fail with
+`requires go >= 1.26`. And `go mod tidy` resolves any module that is **not already pinned** in `go.mod` to its *latest*
+release, which can be too new. So every directly imported module is pinned in `go.mod` (with a comment explaining why),
+and you should not run `go get -u`. To change a dependency:
+
+```bash
+python3 scripts/check-go-deps.py --suggest github.com/redis/go-redis/v9   # newest release that fits Go 1.25
+docker compose run --rm --no-deps backend go get github.com/redis/go-redis/v9@v9.22.0
+docker compose run --rm --no-deps backend go mod tidy
+python3 scripts/check-go-deps.py                                          # verify the whole graph still fits
+```
+
+To move to a newer Go, change `go` in `backend/go.mod` and `GO_VERSION` in `backend/Dockerfile` together, rebuild, then
+re-run the tests.
 
 ## Configuration
 
 | File | Purpose |
 | --- | --- |
-| `.env.example` → `.env` | Compose settings: Postgres and MinIO credentials, host ports, trusted origins, upload limits |
+| `.env.example` → `.env` | Compose settings: Postgres and MinIO credentials, host ports, trusted origins, upload limits, worker limits (CPU, memory, concurrency, retries) |
 | `backend/.env.example` | Only for running the API outside Docker (needs Go installed) |
 | `frontend/.env.example` | Only for running Next.js outside Docker |
 
@@ -243,12 +369,13 @@ Compose file sets it to `false` because local development is plain HTTP.
 
 - [docs/architecture.md](docs/architecture.md): structure, decisions, auth design, future AWS seams
 - [docs/uploads.md](docs/uploads.md): upload lifecycle, state machine, security rules, S3 migration notes
+- [docs/processing.md](docs/processing.md): worker, queue, retries, crash recovery, FFmpeg settings, AWS (SQS) migration
 - [docs/api.md](docs/api.md): endpoint reference and error format
 
 ## Roadmap
 
 1. **Foundation**: layout, auth, data model, local environment, tests (done)
-2. **Uploads to S3-compatible storage via presigned URLs, upload state tracking** (this phase)
-3. SQS + Go/FFmpeg worker (`backend/cmd/worker`) producing HLS renditions and thumbnails
-4. CloudFront delivery and a watch page with a video player
+2. **Uploads to S3-compatible storage via presigned URLs, upload state tracking** (done)
+3. **Redis queue + Go/FFmpeg worker (`backend/cmd/worker`) producing HLS renditions and thumbnails, HLS watch page** (this phase)
+4. CloudFront delivery (private S3, signed URLs/cookies) replacing the API media route
 5. Terraform-managed AWS environment and GitHub Actions CI/CD
