@@ -22,7 +22,12 @@ services:
   # S3-compatible object storage for local development. The browser uploads
   # straight to this service; AWS S3 replaces it later with configuration only.
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # MinIO, Inc. removed minio/minio and minio/mc from Docker Hub (Sept 2026) and quay.io now
+    # requires a login, so this uses Silo (pgsty/minio), a community fork of the MinIO server that
+    # keeps the same S3 API, console, env vars and `mc` tooling. Pinned by tag AND digest of the
+    # multi-arch index, so a re-pushed tag cannot change what you run. To upgrade: pick a newer
+    # RELEASE tag on Docker Hub, copy its digest, then re-run the readiness checks.
+    image: pgsty/minio:RELEASE.2026-06-18T00-00-00Z@sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
@@ -36,14 +41,17 @@ services:
     volumes:
       - miniodata:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # curl ships in the image; the readiness endpoint needs no credentials or `mc` alias.
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
   # Runs once per `up`: creates the private bucket and the least-privilege app user.
   minio-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    # Matching `mc` client from the same fork (see the note on the minio service). Digest = multi-arch index.
+    image: pgsty/mc:RELEASE.2026-10-26T00-00-00Z@sha256:ce62c9053c69ce12a527a322345b5ad9f44b5f8a7b8189f82e516f2e3f30f1d8
     depends_on:
       minio:
         condition: service_healthy
@@ -57,6 +65,19 @@ services:
       - ./infra/minio/init.sh:/init.sh:ro
     entrypoint: ["/bin/sh", "/init.sh"]
     restart: "no"
+
+  # Job queue transport. PostgreSQL remains the source of truth for job state, so Redis
+  # may lose its data without losing work: the worker's sweeper re-sends unfinished jobs.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   backend:
     build:
@@ -83,6 +104,10 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Set S3_SECRET_ACCESS_KEY in .env}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-1073741824}
       UPLOAD_URL_TTL_MINUTES: ${UPLOAD_URL_TTL_MINUTES:-30}
+      # Job queue: the API publishes a message per upload; the worker consumes it.
+      QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-4}
     volumes:
       - ./backend:/src
       # Go module and build caches survive container restarts.
@@ -95,6 +120,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/v1/health"]
       interval: 10s
@@ -102,6 +129,55 @@ services:
       retries: 5
       # `go run` compiles on start; the first build after a cache wipe is slow.
       start_period: 90s
+
+  # Video-processing worker: independent of the API, sharing only PostgreSQL, Redis and
+  # MinIO. Resource limits keep FFmpeg from starving the rest of a small VM; raise
+  # WORKER_CPUS / WORKER_MEMORY (and WORKER_CONCURRENCY / FFMPEG_THREADS) on bigger hosts.
+  worker:
+    build:
+      context: ./backend
+      target: worker-dev
+    command: ["go", "run", "./cmd/worker"]
+    restart: unless-stopped
+    stop_grace_period: 90s # lets a running job finish; see WORKER_SHUTDOWN_GRACE_SECONDS
+    cpus: ${WORKER_CPUS:-2}
+    mem_limit: ${WORKER_MEMORY:-2g}
+    environment:
+      ENVIRONMENT: development
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgres://${POSTGRES_USER:-ryucloud}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ryucloud}?sslmode=disable
+      QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_USE_PATH_STYLE: "true"
+      S3_BUCKET: ${S3_BUCKET:-ryucloud-media}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?Set S3_ACCESS_KEY_ID in .env}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Set S3_SECRET_ACCESS_KEY in .env}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-4}
+      WORKER_RETRY_BASE_SECONDS: ${WORKER_RETRY_BASE_SECONDS:-30}
+      WORKER_RETRY_MAX_SECONDS: ${WORKER_RETRY_MAX_SECONDS:-900}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-120}
+      WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-1800}
+      WORKER_MAX_DURATION_MINUTES: ${WORKER_MAX_DURATION_MINUTES:-120}
+      WORKER_SHUTDOWN_GRACE_SECONDS: ${WORKER_SHUTDOWN_GRACE_SECONDS:-60}
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
+    volumes:
+      - ./backend:/src
+      - gomodcache:/go/pkg/mod
+      - gobuildcache:/home/app/.cache/go-build
+      # Scratch space for downloads and FFmpeg output; survives restarts so the worker
+      # can clean up after a crash, and keeps big files out of the container layer.
+      - workertmp:/var/lib/ryucloud-worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -127,5 +203,7 @@ services:
 volumes:
   pgdata:
   miniodata:
+  redisdata:
+  workertmp:
   gomodcache:
   gobuildcache:
