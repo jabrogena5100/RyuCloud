@@ -4,8 +4,8 @@ Things that broke while getting the Phase 3 stack (Compose, MinIO, Redis, worker
 actually caused each one, and what we did about it. Blunt on purpose: if you hit the same wall, start here.
 
 Status as of 2026-11-05: `scripts/e2e-processing-test.sh` passed all 35 checks (upload, queue, worker, FFmpeg,
-HLS playback, corrupt-file failure path). Not yet confirmed: the `CRASH_TEST=1` step. The Vitest and Go failures found on
-the same day are explained in section 9.
+HLS playback, corrupt-file failure path). Also passed: `CRASH_TEST=1` (43 checks), Vitest (100 tests) and `go test ./...`. The test failures found on the
+same day are explained in section 9. Not yet confirmed: a real browser upload from outside the VM (section 6).
 
 ---
 
@@ -185,7 +185,41 @@ CRASH_TEST=1 bash scripts/e2e-processing-test.sh
 It SIGKILLs the worker mid-transcode. The job's lease (`WORKER_LEASE_SECONDS`, default 120s) has to expire before
 another attempt picks it up, so expect several minutes. Passing means `succeeded|2|ready` (second attempt).
 If it reports the job "finished before it could be killed", raise `CRASH_SECONDS`.
-**Result not yet recorded.**
+**Result (2026-11-05): passed, 43 checks.** The worker was killed at 2%; after the lease expired another attempt
+ran from scratch and the job ended `succeeded` with `attempts=2`. The progress bar visibly drops back once when a
+retry starts (the new attempt begins again); that is expected.
+
+Gotcha we hit: the first attempts printed the step 7 header and then silently stopped. The script runs with
+`set -euo pipefail`, and `env_value WORKER_LEASE_SECONDS` returned non-zero because that key isn't in an older
+`.env` (`grep` found nothing, `pipefail` made the pipeline fail, `set -e` exited). `env_value` now treats a
+missing key as empty. If a script ever stops without an error message, suspect `set -e` on a failing `grep`.
+
+---
+
+## 11. Watch page: `Module not found: Can't resolve 'hls.js'`
+
+**Symptom:** opening a video in the browser shows a Next.js build error for `VideoPlayer.tsx`, while `npm test`
+passes.
+
+**Cause (two things):**
+1. `hls.js` was added to `package.json` but `package-lock.json` was never regenerated, so it has no entry for it.
+2. The dev container keeps `node_modules` in an anonymous volume (`/app/node_modules` in `docker-compose.yml`). A
+   volume created before `hls.js` existed keeps shadowing the image's `node_modules`, so rebuilding the image does
+   nothing. Tests passed because the player test mocks `hls.js`.
+
+**Fix:**
+```bash
+docker compose run --rm --no-deps frontend npm install        # writes the missing lockfile entry to ./frontend
+docker compose build frontend
+docker compose up -d --no-deps --renew-anon-volumes --force-recreate frontend
+docker compose exec frontend ls node_modules/hls.js/package.json   # must exist
+```
+`--renew-anon-volumes` only replaces the frontend's throwaway `node_modules` and `.next` volumes. Named volumes
+(`pgdata`, `miniodata`, `redisdata`, ...) are not touched. `src/dependencies.test.ts` now fails `npm test` if
+`hls.js` is missing, so this shows up before the browser does.
+
+**Rule of thumb:** after any change to `frontend/package.json`, regenerate the lockfile and renew the frontend's
+anonymous volumes.
 
 ---
 
@@ -198,5 +232,6 @@ If it reports the job "finished before it could be killed", raise `CRASH_SECONDS
 | Direct PUT to storage: 403 `AccessDenied` | App user missing its policy | `docker compose run --rm minio-init` |
 | `SignatureDoesNotMatch` on PUT | Signed host or headers differ from what was sent | `S3_PUBLIC_ENDPOINT` vs. the host you're hitting |
 | Pull access denied for `minio/*` | Images removed from Docker Hub | Use the pinned `pgsty/*` images in `docker-compose.yml` |
+| Next.js `Module not found` for a package that's in package.json | Stale `node_modules` volume / lockfile | Section 11 |
 | Container exited, logs gone | `up` recreated it | Capture logs before `up` |
 | Upload works on the VM but not from your laptop | Presigned URL points at the VM's `localhost` | SSH tunnel (section 6) |
