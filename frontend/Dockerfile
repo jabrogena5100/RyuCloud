@@ -6,8 +6,10 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package.json package-lock.json* ./
-# npm ci when a lockfile is committed (reproducible); npm install only to bootstrap one.
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# npm ci when a lockfile is committed (reproducible). If the lockfile is stale (for example right
+# after a dependency was added to package.json) fall back to npm install so the build still works;
+# then refresh and commit the lockfile (see README: "Upgrading to Phase 3").
+RUN if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi
 
 # Development image. docker-compose.yml bind-mounts ./frontend over /app and keeps
 # node_modules and .next in container-owned volumes.

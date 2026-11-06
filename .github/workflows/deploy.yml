@@ -1,0 +1,106 @@
+# Deployment to AWS. MANUAL ONLY: it never runs on push or pull request.
+#
+# What it does, in order: build the three images and push them to ECR tagged with the commit
+# SHA -> run database migrations as a one-off ECS task -> roll the API, worker and frontend
+# services onto the new images (ECS rolls back automatically if the new tasks fail health checks).
+#
+# It needs the infrastructure to exist already (docs/aws-runbook.md) and a GitHub environment
+# named "production" with the variables listed below. Add required reviewers to that
+# environment to get an approval gate before every deployment. AWS access uses OIDC: no
+# long-lived keys are stored in GitHub.
+#
+# Environment variables (Settings > Environments > production > Variables):
+#   AWS_DEPLOY_ROLE_ARN   terraform output github_deploy_role_arn
+#   AWS_REGION            e.g. us-east-1
+#   ECR_PREFIX            "<project>-<environment>", e.g. ryucloud-prod
+#   ECS_CLUSTER           terraform output ecs_cluster
+#   MIGRATE_SUBNETS       comma-separated terraform output task_subnets
+#   MIGRATE_SECURITY_GROUP terraform output task_security_group
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm. This updates running services on AWS.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # request the OIDC token used to assume the AWS role
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ inputs.confirm == 'deploy' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      CLUSTER: ${{ vars.ECS_CLUSTER }}
+      SUBNETS: ${{ vars.MIGRATE_SUBNETS }}
+      SECURITY_GROUP: ${{ vars.MIGRATE_SECURITY_GROUP }}
+      PREFIX: ${{ vars.ECR_PREFIX }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push api
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: prod
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.PREFIX }}/api:${{ env.TAG }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Build and push worker
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: worker
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.PREFIX }}/worker:${{ env.TAG }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          target: prod
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.PREFIX }}/frontend:${{ env.TAG }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Register the migration task with the new API image, then run it
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          scripts/aws-roll-service.sh "$CLUSTER" - "$PREFIX-migrate" migrate "$REGISTRY/$PREFIX/api:$TAG"
+          TASK_FAMILY="$PREFIX-migrate" scripts/aws-run-migrations.sh
+
+      - name: Roll out services
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          scripts/aws-roll-service.sh "$CLUSTER" api      "$PREFIX-api"      api      "$REGISTRY/$PREFIX/api:$TAG"
+          scripts/aws-roll-service.sh "$CLUSTER" worker   "$PREFIX-worker"   worker   "$REGISTRY/$PREFIX/worker:$TAG"
+          scripts/aws-roll-service.sh "$CLUSTER" frontend "$PREFIX-frontend" frontend "$REGISTRY/$PREFIX/frontend:$TAG"

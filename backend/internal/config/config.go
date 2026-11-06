@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -22,9 +23,12 @@ type Config struct {
 	CookieSecure      bool
 	TrustedOrigins    []string
 	EnableAPIDocs     bool
-	QueueBackend      string // "disabled", "memory" or "redis"
+	QueueBackend      string // "disabled", "memory", "redis" or "sqs"
 	StorageBackend    string // "disabled" or "s3"
+	PlaybackBackend   string // "api" (the API streams media, local) or "cloudfront" (signed CDN access)
 	S3                S3Config
+	SQS               SQSConfig
+	CloudFront        CloudFrontConfig
 	Upload            UploadConfig
 	Redis             RedisConfig
 	Worker            WorkerConfig
@@ -33,6 +37,28 @@ type Config struct {
 // RedisConfig configures the job queue transport used when QUEUE_BACKEND=redis.
 type RedisConfig struct {
 	URL string // e.g. redis://redis:6379/0
+}
+
+// SQSConfig configures the AWS SQS queue used when QUEUE_BACKEND=sqs. Credentials come
+// from the AWS default chain (the ECS task role); there are no static keys.
+type SQSConfig struct {
+	QueueURL string // https://sqs.<region>.amazonaws.com/<account>/<name>
+	Region   string // defaults to AWS_REGION, then S3_REGION
+	// VisibilityTimeout is how long a received message stays hidden. It should exceed the
+	// worker's job timeout so a running job is not delivered to a second worker.
+	VisibilityTimeout time.Duration
+}
+
+// CloudFrontConfig configures private media delivery when PLAYBACK_BACKEND=cloudfront.
+// Media is served from a CloudFront distribution whose S3 origin is private. Viewers
+// get short-lived signed cookies (playback) and signed URLs (thumbnails) from the API.
+type CloudFrontConfig struct {
+	Domain       string        // media host, e.g. media.example.com (no scheme)
+	KeyPairID    string        // ID of the CloudFront public key in the trusted key group
+	PrivateKey   string        // PEM-encoded RSA private key; comes from a secret store, never a file in Git
+	CookieDomain string        // parent domain shared with the app, e.g. example.com
+	PlaybackTTL  time.Duration // lifetime of the signed playback cookies
+	ThumbnailTTL time.Duration // lifetime of signed thumbnail URLs
 }
 
 // WorkerConfig tunes the video-processing worker. The API reads MaxAttempts too,
@@ -98,6 +124,7 @@ func Load() (Config, error) {
 		TrustedOrigins:    splitOrigins(getenv("TRUSTED_ORIGINS", "http://localhost:3000")),
 		QueueBackend:      getenv("QUEUE_BACKEND", "disabled"),
 		StorageBackend:    getenv("STORAGE_BACKEND", "disabled"),
+		PlaybackBackend:   getenv("PLAYBACK_BACKEND", "api"),
 	}
 	cfg.S3 = S3Config{
 		Endpoint:        strings.TrimRight(os.Getenv("S3_ENDPOINT"), "/"),
@@ -108,7 +135,12 @@ func Load() (Config, error) {
 		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
-		return Config{}, errors.New("DATABASE_URL is required")
+		// Cloud deployments inject the pieces separately because the password comes from a
+		// secret store; assemble the URL here so the password is escaped correctly.
+		cfg.DatabaseURL = databaseURLFromParts()
+	}
+	if cfg.DatabaseURL == "" {
+		return Config{}, errors.New("DATABASE_URL (or DB_HOST, DB_NAME, DB_USER and DB_PASSWORD) is required")
 	}
 
 	var err error
@@ -133,8 +165,12 @@ func Load() (Config, error) {
 		if u, err := url.Parse(cfg.Redis.URL); err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
 			return Config{}, errors.New("REDIS_URL must be a redis:// or rediss:// URL when QUEUE_BACKEND=redis")
 		}
+	case "sqs":
+		if err := loadSQS(&cfg); err != nil {
+			return Config{}, err
+		}
 	default:
-		return Config{}, fmt.Errorf("QUEUE_BACKEND must be \"disabled\", \"memory\" or \"redis\", got %q", cfg.QueueBackend)
+		return Config{}, fmt.Errorf("QUEUE_BACKEND must be \"disabled\", \"memory\", \"redis\" or \"sqs\", got %q", cfg.QueueBackend)
 	}
 
 	if cfg.Worker, err = loadWorker(); err != nil {
@@ -144,7 +180,88 @@ func Load() (Config, error) {
 	if err := loadStorage(&cfg); err != nil {
 		return Config{}, err
 	}
+	if err := loadPlayback(&cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// databaseURLFromParts builds a postgres:// URL from DB_HOST, DB_PORT, DB_NAME, DB_USER,
+// DB_PASSWORD and DB_SSLMODE. It returns "" unless the host is set.
+func databaseURLFromParts() string {
+	host := os.Getenv("DB_HOST")
+	if host == "" {
+		return ""
+	}
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD")),
+		Host:     net.JoinHostPort(host, getenv("DB_PORT", "5432")),
+		Path:     "/" + os.Getenv("DB_NAME"),
+		RawQuery: url.Values{"sslmode": {getenv("DB_SSLMODE", "require")}}.Encode(),
+	}
+	return u.String()
+}
+
+func loadSQS(cfg *Config) error {
+	region := getenv("SQS_REGION", getenv("AWS_REGION", cfg.S3.Region))
+	u, err := url.Parse(os.Getenv("SQS_QUEUE_URL"))
+	if err != nil || u.Scheme != "https" || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+		return errors.New("SQS_QUEUE_URL must be the https:// URL of the queue when QUEUE_BACKEND=sqs")
+	}
+	// The visibility timeout must outlast a job, or a second worker receives the message
+	// while the first is still transcoding (harmless, but wasteful).
+	secs, err := intRange("SQS_VISIBILITY_TIMEOUT_SECONDS", 1860, 30, 43200)
+	if err != nil {
+		return err
+	}
+	cfg.SQS = SQSConfig{QueueURL: u.String(), Region: region, VisibilityTimeout: time.Duration(secs) * time.Second}
+	return nil
+}
+
+// loadPlayback validates how media reaches viewers. The default ("api") keeps the local
+// behavior; "cloudfront" requires the full signing configuration so a half-configured
+// deployment fails at startup instead of serving broken links.
+func loadPlayback(cfg *Config) error {
+	switch cfg.PlaybackBackend {
+	case "api":
+		return nil
+	case "cloudfront":
+	default:
+		return fmt.Errorf("PLAYBACK_BACKEND must be \"api\" or \"cloudfront\", got %q", cfg.PlaybackBackend)
+	}
+	cf := CloudFrontConfig{
+		Domain:       strings.TrimSpace(os.Getenv("CLOUDFRONT_DOMAIN")),
+		KeyPairID:    strings.TrimSpace(os.Getenv("CLOUDFRONT_KEY_PAIR_ID")),
+		PrivateKey:   os.Getenv("CLOUDFRONT_PRIVATE_KEY"),
+		CookieDomain: strings.TrimPrefix(strings.TrimSpace(os.Getenv("CLOUDFRONT_COOKIE_DOMAIN")), "."),
+	}
+	if cf.Domain == "" || strings.Contains(cf.Domain, "/") || strings.Contains(cf.Domain, ":") {
+		return errors.New("CLOUDFRONT_DOMAIN must be a bare host name (for example media.example.com) when PLAYBACK_BACKEND=cloudfront")
+	}
+	if cf.KeyPairID == "" || cf.PrivateKey == "" {
+		return errors.New("CLOUDFRONT_KEY_PAIR_ID and CLOUDFRONT_PRIVATE_KEY are required when PLAYBACK_BACKEND=cloudfront")
+	}
+	// Browsers only send the signed cookies to the media host if they are scoped to a
+	// parent domain shared by the app and the CDN.
+	if cf.CookieDomain == "" || (cf.Domain != cf.CookieDomain && !strings.HasSuffix(cf.Domain, "."+cf.CookieDomain)) {
+		return errors.New("CLOUDFRONT_COOKIE_DOMAIN must be a parent domain of CLOUDFRONT_DOMAIN (for example example.com)")
+	}
+	if !cfg.CookieSecure {
+		return errors.New("PLAYBACK_BACKEND=cloudfront requires COOKIE_SECURE=true")
+	}
+	mins, err := intRange("CLOUDFRONT_PLAYBACK_TTL_MINUTES", 120, 5, 720)
+	if err != nil {
+		return err
+	}
+	thumbMins, err := intRange("CLOUDFRONT_THUMBNAIL_TTL_MINUTES", 60, 1, 720)
+	if err != nil {
+		return err
+	}
+	cf.PlaybackTTL = time.Duration(mins) * time.Minute
+	cf.ThumbnailTTL = time.Duration(thumbMins) * time.Minute
+	cfg.CloudFront = cf
+	return nil
 }
 
 // loadStorage reads and validates the storage and upload settings.

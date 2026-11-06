@@ -9,10 +9,21 @@ type VideoPlayerProps = {
   title: string;
 };
 
+/** True when src is on another origin (the CDN host), where cookies need explicit opt-in. */
+function isCrossOrigin(src: string): boolean {
+  try {
+    return new URL(src, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * HLS player. Safari/iOS play HLS natively; other browsers get hls.js (loaded only
  * when needed, so it stays out of every other page's bundle). The playlist and
- * segment requests are same-origin, so the session cookie authorizes private media.
+ * segment requests are same-origin locally, so the session cookie authorizes private media.
+ * In AWS the playlist lives on the CDN host (a sibling subdomain); the API sets signed
+ * CloudFront cookies when it returns the video, and requests to the CDN must send them.
  */
 export function VideoPlayer({ src, poster, title }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -25,7 +36,12 @@ export function VideoPlayer({ src, poster, title }: VideoPlayerProps) {
     }
     setError(null);
 
+    const crossOrigin = isCrossOrigin(src);
+
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      if (crossOrigin) {
+        video.crossOrigin = "use-credentials";
+      }
       video.src = src;
       return () => {
         video.removeAttribute("src");
@@ -44,7 +60,17 @@ export function VideoPlayer({ src, poster, title }: VideoPlayerProps) {
           setError("This browser can't play streaming video.");
           return;
         }
-        const hls = new Hls();
+        const hls = new Hls(
+          crossOrigin
+            ? {
+                xhrSetup: (xhr: XMLHttpRequest) => {
+                  xhr.withCredentials = true;
+                },
+                fetchSetup: (context: { url: string }, init: RequestInit) =>
+                  new Request(context.url, { ...init, credentials: "include" }),
+              }
+            : {},
+        );
         destroy = () => hls.destroy();
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) {

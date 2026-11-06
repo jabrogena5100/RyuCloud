@@ -13,7 +13,7 @@ to turn both off.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/health` | none | Liveness. `{"status": "ok", "version": "0.3.0"}` |
+| GET | `/health` | none | Liveness. `{"status": "ok", "version": "0.4.0"}` |
 | GET | `/health/ready` | none | Readiness: PostgreSQL answers **and** the applied migration version is at least the newest one embedded in this build (`schema_version` in the response). `503 database_unavailable` if the DB is down; `503 migrations_pending` until `api migrate up` has run. Compose's own health check uses the plain `/health` so a container is not restarted while you migrate |
 
 ## Auth
@@ -168,3 +168,11 @@ curl -c jar.txt -H 'Content-Type: application/json' \
   http://localhost:8000/api/v1/auth/register
 curl -b jar.txt http://localhost:8000/api/v1/auth/me
 ```
+
+## Media delivery in AWS
+
+With `PLAYBACK_BACKEND=cloudfront` (production), `playback_url` and `thumbnail_url` point at the CloudFront media host
+(`https://media.<domain>/videos/{id}/hls/master.m3u8`). `GET /videos/{id}` additionally sets three `CloudFront-*` cookies
+(`HttpOnly`, `Secure`, scoped to `/videos/{id}/`) that authorise that video's files for a limited time; thumbnail URLs
+are individually signed. The local `/videos/{id}/hls/...` and `/videos/{id}/thumbnail` routes still exist and apply the
+same visibility rules, but are not linked from responses in this mode.

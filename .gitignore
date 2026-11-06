@@ -17,12 +17,17 @@ next-env.d.ts
 *.tsbuildinfo
 npm-debug.log*
 
-# Terraform (later phases)
+# Terraform. Commit .terraform.lock.hcl; never commit state, variable values or keys.
 .terraform/
 *.tfstate
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+infra/terraform/backend.hcl
+infra/terraform/*.pem
+infra/terraform/*.key
+crash.log
+tfplan
 
 # Editors / OS
 .idea/

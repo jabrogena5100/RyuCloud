@@ -11,7 +11,7 @@ import (
 // a lost, duplicated or late message can never corrupt a job.
 type Delivery struct {
 	JobID string
-	// receipt identifies the in-flight copy (for SQS this would be the receipt handle).
+	// receipt identifies the in-flight copy (for SQS, the receipt handle).
 	receipt string
 }
 
@@ -22,9 +22,9 @@ type Delivery struct {
 //	Ack      - drop the in-flight message; call it only AFTER the outcome is persisted
 //	Requeue  - make the job available again and forget any in-flight copy (crash recovery)
 //
-// Redis implements it with two lists; an SQS implementation maps Publish to
+// Redis implements it with two lists (local development); SQSQueue maps Publish to
 // SendMessage, Receive to ReceiveMessage, Ack to DeleteMessage and Requeue to
-// SendMessage. Nothing outside this package depends on Redis.
+// SendMessage (AWS). Nothing outside this package depends on either.
 type Queue interface {
 	Publish(ctx context.Context, jobID string) error
 	Receive(ctx context.Context, wait time.Duration) (*Delivery, error)

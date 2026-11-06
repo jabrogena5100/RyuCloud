@@ -1,6 +1,6 @@
 // Package integrations defines the seams for external services: object storage
-// (MinIO locally, AWS S3 later), a job queue (SQS, Phase 3) and playback URLs
-// (CloudFront, Phase 4). Handlers depend only on these interfaces.
+// (MinIO locally, AWS S3 in production), a job queue (Redis locally, SQS in AWS) and
+// playback URLs (the API locally, CloudFront in AWS). Handlers depend only on these interfaces.
 package integrations
 
 import (
@@ -136,11 +136,13 @@ func NewStorage(ctx context.Context, cfg config.Config) (ObjectStorage, error) {
 }
 
 // NewQueue returns the queue selected by QUEUE_BACKEND: "redis" (local development),
-// "memory" (tests and single-process experiments) or "disabled".
+// "sqs" (AWS), "memory" (tests and single-process experiments) or "disabled".
 func NewQueue(ctx context.Context, cfg config.Config) (Queue, error) {
 	switch cfg.QueueBackend {
 	case "redis":
 		return NewRedisQueue(ctx, cfg.Redis.URL)
+	case "sqs":
+		return NewSQSQueue(ctx, cfg.SQS)
 	case "memory":
 		return NewMemoryQueue(), nil
 	case "disabled", "":

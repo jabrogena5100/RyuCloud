@@ -161,7 +161,15 @@ func TestNewQueueSelectsBackend(t *testing.T) {
 	if q, err := NewQueue(ctx, config.Config{QueueBackend: "disabled"}); err != nil || q == nil {
 		t.Fatalf("disabled backend: %v, %v", q, err)
 	}
-	if _, err := NewQueue(ctx, config.Config{QueueBackend: "sqs"}); err == nil {
+	// Building the SQS client makes no network call; it only loads AWS configuration.
+	sqsCfg := config.Config{QueueBackend: "sqs"}
+	sqsCfg.SQS = config.SQSConfig{QueueURL: "https://sqs.us-east-1.amazonaws.com/123456789012/q", Region: "us-east-1"}
+	if q, err := NewQueue(ctx, sqsCfg); err != nil {
+		t.Fatal(err)
+	} else if _, ok := q.(*SQSQueue); !ok {
+		t.Fatalf("sqs backend returned %T", q)
+	}
+	if _, err := NewQueue(ctx, config.Config{QueueBackend: "kafka"}); err == nil {
 		t.Fatal("expected an error for an unknown backend")
 	}
 }

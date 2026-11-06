@@ -82,9 +82,20 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	logger.Info("job queue", "backend", cfg.QueueBackend)
 
+	playback, err := integrations.NewPlayback(cfg, server.APIPrefix)
+	if err != nil {
+		return err
+	}
+	if cf, ok := playback.(*integrations.CloudFrontPlayback); ok {
+		cf.OnError = func(videoID string, err error) {
+			logger.Error("could not sign CloudFront access", "video_id", videoID, "error", err)
+		}
+	}
+	logger.Info("media delivery", "backend", cfg.PlaybackBackend)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           server.New(cfg, pool, logger, server.WithStorage(storage), server.WithQueue(queue)),
+		Handler:           server.New(cfg, pool, logger, server.WithStorage(storage), server.WithQueue(queue), server.WithPlayback(playback)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

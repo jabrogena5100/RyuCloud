@@ -1,5 +1,7 @@
 # Architecture
 
+> This page describes the local (Docker Compose) system. The AWS deployment design is in [aws-architecture.md](aws-architecture.md).
+
 ## Overview
 
 ```

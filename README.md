@@ -3,13 +3,16 @@
 A cloud-native, YouTube-style video platform built as a software-engineering and
 AWS portfolio project.
 
-**Status: Phase 3 (asynchronous video processing).** Accounts, channels, **direct-to-storage uploads**
-and now **background transcoding** work locally: after the browser uploads to MinIO, a separate Go
-**worker** takes the job from a Redis queue, runs FFmpeg to produce 360p/720p **HLS** renditions and a
-thumbnail, stores them in private storage, and marks the video **ready**; the watch page plays it with
-hls.js. Jobs are tracked in PostgreSQL with retries, leases and crash recovery. CDN delivery
-(CloudFront) and AWS infrastructure are **not** implemented yet; nothing here uses AWS or costs money.
-See [docs/uploads.md](docs/uploads.md) and [docs/processing.md](docs/processing.md).
+**Status: Phase 4 (AWS infrastructure, prepared but not deployed).** Accounts, channels, direct-to-storage
+uploads and background HLS transcoding still run locally on Docker Compose exactly as before (MinIO, Redis, the Go
+worker). Phase 4 adds the code and configuration to run the same app on AWS: Terraform for the VPC, ALB, ECS Fargate
+services, RDS PostgreSQL, private S3, CloudFront (Origin Access Control + signed cookies/URLs), SQS with a dead-letter
+queue, IAM, Secrets Manager, CloudWatch alarms/dashboard and a budget; an SQS queue adapter and CloudFront playback
+provider selected by environment variables; and GitHub Actions for CI and a manual, approval-gated deploy.
+**Nothing has been applied or deployed and nothing here costs money until you run `terraform apply`.**
+See [docs/aws-architecture.md](docs/aws-architecture.md), [docs/aws-costs.md](docs/aws-costs.md),
+[docs/aws-security.md](docs/aws-security.md) and [docs/aws-runbook.md](docs/aws-runbook.md). Local behavior:
+[docs/uploads.md](docs/uploads.md), [docs/processing.md](docs/processing.md).
 
 | Layer | Tech |
 | --- | --- |
@@ -37,14 +40,15 @@ backend/                  Go API (modular monolith)
   internal/transcode/     ffprobe/ffmpeg wrappers, rendition planning, HLS playlists
   internal/worker/        the processing engine (concurrency, backoff, recovery, shutdown)
   internal/health/        liveness/readiness
-  internal/integrations/  storage (S3/MinIO adapter), queue and playback interfaces (SQS, CloudFront later)
+  internal/integrations/  storage (S3/MinIO), queue (Redis, SQS) and playback (API, CloudFront) adapters
   internal/httpx/         error envelope, validation, middleware
   internal/database/      pgx pool, goose runner, SQL migrations
   internal/config/        environment configuration
   internal/server/        route wiring, OpenAPI spec, API integration tests
-infra/                    MinIO bucket init script (infra/minio); Terraform arrives in a later phase
+infra/                    MinIO bucket init script (infra/minio); AWS Terraform (infra/terraform)
+.github/workflows/        CI (ci.yml) and manual deploy (deploy.yml)
 docs/                     architecture and API docs
-scripts/                  helper scripts (smoke test, end-to-end upload test)
+scripts/                  helper scripts (smoke tests, end-to-end tests, AWS migration/roll-out, Terraform validation)
 docker-compose.yml        local development stack
 ```
 
@@ -377,6 +381,6 @@ Compose file sets it to `false` because local development is plain HTTP.
 
 1. **Foundation**: layout, auth, data model, local environment, tests (done)
 2. **Uploads to S3-compatible storage via presigned URLs, upload state tracking** (done)
-3. **Redis queue + Go/FFmpeg worker (`backend/cmd/worker`) producing HLS renditions and thumbnails, HLS watch page** (this phase)
-4. CloudFront delivery (private S3, signed URLs/cookies) replacing the API media route
-5. Terraform-managed AWS environment and GitHub Actions CI/CD
+3. **Redis queue + Go/FFmpeg worker (`backend/cmd/worker`) producing HLS renditions and thumbnails, HLS watch page** (implemented; its end-to-end verification result is not recorded in the repository)
+4. **AWS: Terraform, ECS Fargate, RDS, private S3 + CloudFront signed access, SQS + DLQ, observability, GitHub Actions CI/CD** (this phase: written, not deployed)
+5. First real deployment, then hardening: private subnets/NAT or VPC endpoints, WAF, auto scaling, Multi-AZ

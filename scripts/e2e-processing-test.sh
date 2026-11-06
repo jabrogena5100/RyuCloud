@@ -33,7 +33,7 @@ command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required (used to parse JSON)" >&2; exit 1; }
 [ -f .env ] || { echo ".env not found; run this from the repository root" >&2; exit 1; }
 
-env_value() { grep -E "^$1=" .env | head -n1 | cut -d= -f2-; }
+env_value() { grep -E "^$1=" .env | head -n1 | cut -d= -f2- || true; }   # a missing key is empty, not an error (set -e + pipefail)
 S3_BUCKET="$(env_value S3_BUCKET)"; S3_BUCKET="${S3_BUCKET:-ryucloud-media}"
 MINIO_PORT="$(env_value MINIO_API_HOST_PORT)"; MINIO_PORT="${MINIO_PORT:-9000}"
 

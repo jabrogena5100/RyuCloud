@@ -14,6 +14,10 @@ func clearEnv(t *testing.T) {
 		"WORKER_RETRY_MAX_SECONDS", "WORKER_LEASE_SECONDS", "WORKER_SWEEP_SECONDS", "WORKER_REPUBLISH_SECONDS",
 		"WORKER_SHUTDOWN_GRACE_SECONDS", "WORKER_JOB_TIMEOUT_SECONDS", "WORKER_MAX_DURATION_MINUTES",
 		"WORKER_TEMP_DIR", "FFMPEG_PATH", "FFPROBE_PATH",
+		"PLAYBACK_BACKEND", "SQS_QUEUE_URL", "SQS_REGION", "AWS_REGION", "SQS_VISIBILITY_TIMEOUT_SECONDS",
+		"CLOUDFRONT_DOMAIN", "CLOUDFRONT_KEY_PAIR_ID", "CLOUDFRONT_PRIVATE_KEY", "CLOUDFRONT_COOKIE_DOMAIN",
+		"CLOUDFRONT_PLAYBACK_TTL_MINUTES", "CLOUDFRONT_THUMBNAIL_TTL_MINUTES",
+		"DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_SSLMODE",
 		"STORAGE_BACKEND", "S3_ENDPOINT", "S3_PUBLIC_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY_ID",
 		"S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE", "UPLOAD_MAX_BYTES", "UPLOAD_URL_TTL_MINUTES",
 	} {
@@ -210,6 +214,114 @@ func TestLoadWorkerRetryMaxMustNotBeBelowBase(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("WORKER_RETRY_BASE_SECONDS", "60")
 	t.Setenv("WORKER_RETRY_MAX_SECONDS", "30")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestDatabaseURLFromParts(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("DB_HOST", "db.internal")
+	t.Setenv("DB_NAME", "ryucloud")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "p@ss:/word?#")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "postgres://app:p%40ss%3A%2Fword%3F%23@db.internal:5432/ryucloud?sslmode=require"
+	if cfg.DatabaseURL != want {
+		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, want)
+	}
+}
+
+func TestDatabaseURLWinsOverParts(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "ignored")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseURL != "postgres://example" {
+		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+}
+
+func TestSQSQueueConfig(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("QUEUE_BACKEND", "sqs")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error without SQS_QUEUE_URL")
+	}
+	t.Setenv("SQS_QUEUE_URL", "http://insecure.example/q")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for a non-https queue URL")
+	}
+	t.Setenv("SQS_QUEUE_URL", "https://sqs.eu-west-1.amazonaws.com/123456789012/ryucloud-jobs")
+	t.Setenv("AWS_REGION", "eu-west-1")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQS.Region != "eu-west-1" || cfg.SQS.VisibilityTimeout != 1860*time.Second {
+		t.Errorf("SQS = %+v", cfg.SQS)
+	}
+}
+
+func TestPlaybackDefaultsToAPI(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PlaybackBackend != "api" {
+		t.Errorf("PlaybackBackend = %q", cfg.PlaybackBackend)
+	}
+}
+
+func TestCloudFrontPlaybackValidation(t *testing.T) {
+	setValid := func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("PLAYBACK_BACKEND", "cloudfront")
+		t.Setenv("COOKIE_SECURE", "true")
+		t.Setenv("CLOUDFRONT_DOMAIN", "media.example.com")
+		t.Setenv("CLOUDFRONT_KEY_PAIR_ID", "K123")
+		t.Setenv("CLOUDFRONT_PRIVATE_KEY", "pem")
+		t.Setenv("CLOUDFRONT_COOKIE_DOMAIN", "example.com")
+	}
+	setValid(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CloudFront.PlaybackTTL != 2*time.Hour || cfg.CloudFront.CookieDomain != "example.com" {
+		t.Errorf("CloudFront = %+v", cfg.CloudFront)
+	}
+
+	cases := []struct{ name, key, value string }{
+		{"scheme in domain", "CLOUDFRONT_DOMAIN", "https://media.example.com"},
+		{"missing private key", "CLOUDFRONT_PRIVATE_KEY", ""},
+		{"missing key pair id", "CLOUDFRONT_KEY_PAIR_ID", ""},
+		{"cookie domain differs", "CLOUDFRONT_COOKIE_DOMAIN", "other.com"},
+		{"cookie domain is a lookalike suffix", "CLOUDFRONT_COOKIE_DOMAIN", "ample.com"},
+		{"insecure cookies", "COOKIE_SECURE", "false"},
+		{"ttl out of range", "CLOUDFRONT_PLAYBACK_TTL_MINUTES", "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setValid(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("expected a validation error")
+			}
+		})
+	}
+}
+
+func TestUnknownPlaybackBackend(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PLAYBACK_BACKEND", "s3")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected an error")
 	}

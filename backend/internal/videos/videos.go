@@ -315,6 +315,12 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, user *auth.User) e
 	if err != nil {
 		return err
 	}
+	// With CloudFront delivery the playback URL only works for a viewer holding signed
+	// cookies. They are issued here, right after the visibility check above, and are
+	// scoped to this one video.
+	if g, ok := h.playback.(integrations.PlaybackGrantor); ok && v.PlaybackURL != nil && v.Status == StatusReady {
+		g.GrantPlayback(w, v.ID)
+	}
 	httpx.WriteJSON(w, http.StatusOK, v)
 	return nil
 }

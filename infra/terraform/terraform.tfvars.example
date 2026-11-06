@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and replace the values marked REPLACE.
+
+domain_name    = "REPLACE.example.com"  # the app; media is served from media.<this>
+hosted_zone_id = "ZREPLACE0123456789"   # public Route 53 zone that contains domain_name
+alert_email    = "REPLACE@example.com"  # alarms and budget alerts
+
+# Safe first apply: create all infrastructure but run no tasks (the images are not in ECR yet).
+# Flip to true after you have pushed images and run migrations (docs/aws-runbook.md).
+deploy_services = false
+
+# Everything below is optional; these are the defaults.
+# aws_region                   = "us-east-1"
+# environment                  = "prod"
+# cloudfront_public_key_path   = "cloudfront_public_key.pem"
+# db_instance_class            = "db.t4g.micro"
+# db_multi_az                  = false
+# worker_use_spot              = true
+# monthly_budget_usd           = 150
+# github_repository            = "OWNER/REPO"   # enables the GitHub OIDC deploy role

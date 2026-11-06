@@ -21,7 +21,7 @@ import (
 const (
 	// APIPrefix is the versioned base path of every route.
 	APIPrefix = "/api/v1"
-	Version   = "0.3.0"
+	Version   = "0.4.0"
 )
 
 //go:embed openapi.yaml
@@ -31,8 +31,9 @@ var openAPISpec []byte
 type Option func(*options)
 
 type options struct {
-	storage integrations.ObjectStorage
-	queue   integrations.Queue
+	storage  integrations.ObjectStorage
+	queue    integrations.Queue
+	playback integrations.PlaybackURLProvider
 }
 
 // WithStorage sets the object store used for uploads. The default fails every
@@ -47,9 +48,19 @@ func WithQueue(queue integrations.Queue) Option {
 	return func(o *options) { o.queue = queue }
 }
 
+// WithPlayback sets how media URLs are produced. The default serves media through the
+// API itself (local development); production passes the CloudFront provider.
+func WithPlayback(playback integrations.PlaybackURLProvider) Option {
+	return func(o *options) { o.playback = playback }
+}
+
 // New returns the API handler: versioned routes behind the shared middleware.
 func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger, opts ...Option) http.Handler {
-	o := options{storage: integrations.DisabledStorage{}, queue: integrations.DisabledQueue{}}
+	o := options{
+		storage:  integrations.DisabledStorage{},
+		queue:    integrations.DisabledQueue{},
+		playback: integrations.NewPlaybackProvider(APIPrefix),
+	}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -60,7 +71,7 @@ func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger, opts ...Optio
 	health.NewHandler(db, Version).Routes(mux, APIPrefix)
 	authService.Routes(mux, APIPrefix)
 	channels.NewHandler(db, authService).Routes(mux, APIPrefix)
-	videos.NewHandler(db, authService, integrations.NewPlaybackProvider(APIPrefix), o.storage).Routes(mux, APIPrefix)
+	videos.NewHandler(db, authService, o.playback, o.storage).Routes(mux, APIPrefix)
 
 	uploadOpts := uploads.Options{MaxBytes: cfg.Upload.MaxBytes, URLTTL: cfg.Upload.URLTTL, MaxAttempts: cfg.Worker.MaxAttempts}
 	uploads.NewHandler(uploads.NewService(db, o.storage, o.queue, uploadOpts), authService, uploadOpts).Routes(mux, APIPrefix)

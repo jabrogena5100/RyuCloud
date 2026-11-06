@@ -63,4 +63,30 @@ describe("VideoPlayer", () => {
     onError("hlsError", { fatal: true });
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't be loaded/i);
   });
+
+  it("sends credentials to a CDN on another origin so the signed cookies are included", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("");
+    render(<VideoPlayer src="https://media.example.com/videos/v1/hls/master.m3u8" title="CDN" />);
+
+    await waitFor(() => expect(HlsMock).toHaveBeenCalled());
+    const config = (HlsMock.mock.calls[0] as unknown[])[0] as { xhrSetup: (xhr: { withCredentials: boolean }) => void };
+    const xhr = { withCredentials: false };
+    config.xhrSetup(xhr);
+    expect(xhr.withCredentials).toBe(true);
+  });
+
+  it("does not change request credentials for same-origin media", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("");
+    render(<VideoPlayer src="/api/v1/videos/v1/hls/master.m3u8" title="Local" />);
+
+    await waitFor(() => expect(HlsMock).toHaveBeenCalled());
+    expect((HlsMock.mock.calls[0] as unknown[])[0]).toEqual({});
+  });
+
+  it("asks native players to send cookies to a cross-origin CDN", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("maybe");
+    render(<VideoPlayer src="https://media.example.com/videos/v1/hls/master.m3u8" title="Native CDN" />);
+
+    expect(screen.getByLabelText("Native CDN")).toHaveAttribute("crossorigin", "use-credentials");
+  });
 });
