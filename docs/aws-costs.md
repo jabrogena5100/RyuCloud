@@ -1,8 +1,15 @@
 # AWS cost estimate
 
-**These are estimates, not measurements, and nothing has been deployed.** They use public on-demand list prices for
-`us-east-1` as best known when this was written (730 hours/month). Prices change and differ by region: confirm with
-the [AWS Pricing Calculator](https://calculator.aws/) and the Billing console before applying.
+**These are estimates, not measurements, and nothing has been deployed.** They use public on-demand list prices
+as best known when this was written (730 hours/month), taken from `us-east-1`. **The chosen region is `us-west-2`.** To my
+knowledge Oregon list prices for ALB, RDS `db.t4g.micro`, gp3, public IPv4, S3, Secrets Manager and CloudWatch match
+`us-east-1`, and Fargate in Oregon is priced the same as Virginia (Northern California is about 15% higher), but I could
+not confirm Oregon's figures from the public pages, so treat every number as **unverified for us-west-2**. Prices change:
+check the [AWS Pricing Calculator](https://calculator.aws/), or the Price List API once you are logged in
+(`aws pricing get-products --region us-east-1 --service-code AmazonECS ...`, read-only), before applying.
+
+**Correction (Phase 5):** re-adding the rows below gives about $90 to $117, not the "80 to 105" first published. The idle
+figure with no tasks running is about $50 (ALB 22 + 2 ALB addresses 7 + RDS 14 + secrets, DNS, alarms, logs, ECR about 6).
 
 ## Fixed monthly cost with the default settings (always on, no traffic)
 
@@ -20,9 +27,35 @@ the [AWS Pricing Calculator](https://calculator.aws/) and the Billing console be
 | CloudWatch: 20 alarms, 4 custom metrics, 1 dashboard | $0.10 / $0.30 / first 3 free | 3.2 |
 | CloudWatch Logs ingestion + storage | $0.50/GB ingested; light use | 1 – 3 |
 | ECR image storage | $0.10/GB-month; about 3 repos × a few hundred MB | 1 |
-| **Total (idle)** | | **≈ 80 – 105** |
+| **Total, all services running, no traffic** | rows above (low: Spot worker, 1 GB logs; high: on-demand worker, 3 GB logs) | **≈ 90 – 117** |
+| **Total, infrastructure only (`deploy_services = false`, zero tasks)** | ALB 22, ALB IPv4 7, RDS 14.3, secrets 0.8, DNS 0.5, alarms 3.2, logs 0–1, ECR 1 | **≈ 49 – 50** |
 
-The default `monthly_budget_usd` is 150, so the 80% alert (≈ $120) fires before the baseline is exceeded.
+The default `monthly_budget_usd` is 150; `terraform.tfvars.example` suggests 60 for a temporary environment. That budget is created by this
+stack and is destroyed with it, so also create an account-level budget by hand.
+
+## On-demand vs always-running
+
+Hourly cost of the whole stack up (list prices, unverified for us-west-2): ALB 0.0225 + about 0.008 LCU = 0.0305; five public IPv4
+addresses 0.025; RDS 0.016; API and frontend tasks 2 × 0.0123 = 0.0247; worker 0.049 on-demand or about 0.015 on Spot. Sum:
+**≈ $0.11 – 0.15 per hour**. Monthly items (storage, secrets, alarms) add under $0.01 per hour.
+
+| | Temporary sessions (`protect_data = false`, destroy afterwards) | Always running (`protect_data = true`) |
+| --- | --- | --- |
+| Cost | 4 h session ≈ $0.45 – 0.60; 8 sessions of 4 h a month ≈ $3.50 – 4.60, plus about $0.50/month for the Route 53 zone and the yearly domain fee | ≈ $90 – 117 per month, plus CloudFront and S3 usage |
+| Setup time per session | ≈ 20 – 30 min to apply (RDS, CloudFront, ACM); ≈ 10 – 20 min to destroy | None |
+| Data | Database and videos are deleted (no snapshot). Re-seed test data each time. Restoring from a snapshot is not implemented. | Kept; final snapshot on destroy |
+| Public availability | Only while up; a domain name that points nowhere in between | Continuous |
+| What it teaches | Repeatable provisioning, teardown, cost discipline | Operations: alarms, backups, deploys, patching |
+| Main risks | Forgetting to destroy (≈ $2.70 – 3.50 per day if left running); the first apply failing half-way on a Free-plan restriction | Cost creep; single-AZ database, one task per service |
+
+Middle path: keeping the infrastructure up with zero tasks (≈ $50 per month) rarely makes sense; destroy instead.
+
+**Can this fit $10 – 25 per month?** Not as designed. Even with zero tasks the stack costs about $50. The monthly total can fall into that
+range only for temporary use (a few sessions per month), or with a different, cheaper architecture (for example one small EC2 instance
+running Docker Compose, no ALB, no RDS), which would be a separate design decision and has not been costed or built.
+
+**Credits.** A new Free-plan account has credits (AWS documents up to $200, valid for a limited period). Temporary sessions fit comfortably inside
+that; an always-running stack would use it up in roughly two months. Verify the balance in Billing before relying on it.
 
 ## Usage-based costs (scale with how much you use it)
 

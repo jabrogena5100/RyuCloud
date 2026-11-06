@@ -10,8 +10,10 @@
 set -euo pipefail
 
 TF_DIR="$(cd "$(dirname "$0")/../infra/terraform" && pwd)"
-tf_out() { terraform -chdir="$TF_DIR" output -raw "$1"; }
-tf_json() { terraform -chdir="$TF_DIR" output -json "$1"; }
+# Set TERRAFORM=scripts/aws-terraform.sh (absolute path) to read outputs with the pinned Docker version.
+TERRAFORM="${TERRAFORM:-terraform}"
+tf_out() { "$TERRAFORM" -chdir="$TF_DIR" output -raw "$1"; }
+tf_json() { "$TERRAFORM" -chdir="$TF_DIR" output -json "$1"; }
 
 : "${AWS_REGION:=$(tf_out aws_region)}"
 : "${CLUSTER:=$(tf_out ecs_cluster)}"

@@ -1,7 +1,8 @@
-# Copy to backend.hcl (gitignored) and fill in the bucket you created in docs/aws-runbook.md, step 2.
-# Then: terraform init -backend-config=backend.hcl
+# Copy to backend.hcl (gitignored) and fill in the bucket you create in docs/aws-runbook.md, step 2.
+# Then: scripts/aws-terraform.sh init -backend-config=backend.hcl
+# The bucket name is global: use something like ryucloud-tfstate-<your 12-digit account ID>.
 bucket       = "REPLACE-with-your-terraform-state-bucket"
 key          = "ryucloud/prod/terraform.tfstate"
-region       = "us-east-1"
+region       = "us-west-2" # the bucket's region; keep equal to aws_region in terraform.tfvars
 encrypt      = true
 use_lockfile = true # native S3 locking (Terraform 1.10+); no DynamoDB table needed

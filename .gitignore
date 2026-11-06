@@ -24,8 +24,11 @@ npm-debug.log*
 *.tfvars
 !*.tfvars.example
 infra/terraform/backend.hcl
-infra/terraform/*.pem
-infra/terraform/*.key
+infra/terraform/tfplan*
+.ryucloud/
+# Private keys and certificates, anywhere in the repository
+*.pem
+*.key
 crash.log
 tfplan
 

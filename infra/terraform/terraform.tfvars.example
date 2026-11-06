@@ -1,19 +1,30 @@
-# Copy to terraform.tfvars (gitignored) and replace the values marked REPLACE.
+# Copy to terraform.tfvars (gitignored) and replace every value marked REPLACE.
+# Do NOT run plan/apply until docs/phase5-plan.md, "Blockers", is cleared (domain + hosted zone are required).
 
-domain_name    = "REPLACE.example.com"  # the app; media is served from media.<this>
-hosted_zone_id = "ZREPLACE0123456789"   # public Route 53 zone that contains domain_name
-alert_email    = "REPLACE@example.com"  # alarms and budget alerts
+aws_region = "us-west-2" # must equal `region` in backend.hcl and your AWS CLI profile region
+
+domain_name    = "REPLACE.example.com" # the app; media is served from media.<this>. Needs a domain you own.
+hosted_zone_id = "ZREPLACE0123456789"  # public Route 53 zone that contains domain_name (after /hostedzone/)
+alert_email    = "REPLACE@example.com" # your personal address; AWS emails a confirmation you must accept
 
 # Safe first apply: create all infrastructure but run no tasks (the images are not in ECR yet).
 # Flip to true after you have pushed images and run migrations (docs/aws-runbook.md).
 deploy_services = false
 
+# Deployment profile (docs/aws-costs.md, "On-demand vs always-on"):
+#   protect_data = false  -> temporary environment: `terraform destroy` works directly; the database and ALL videos
+#                            are deleted with it (no final snapshot).
+#   protect_data = true   -> long-lived environment: deletion protection on, final snapshot, must be lifted first.
+# Choose before the first apply; changing it later needs an extra apply.
+protect_data = false
+
+# Stack budget alert. It is destroyed with the stack, so also create an account-level budget by hand (docs/phase5-plan.md).
+monthly_budget_usd = 60
+
 # Everything below is optional; these are the defaults.
-# aws_region                   = "us-east-1"
 # environment                  = "prod"
 # cloudfront_public_key_path   = "cloudfront_public_key.pem"
 # db_instance_class            = "db.t4g.micro"
 # db_multi_az                  = false
 # worker_use_spot              = true
-# monthly_budget_usd           = 150
-# github_repository            = "OWNER/REPO"   # enables the GitHub OIDC deploy role
+# github_repository            = "OWNER/REPO"   # enables the GitHub OIDC deploy role; leave unset until audit finding 1 is closed

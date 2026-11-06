@@ -9,15 +9,26 @@ Placeholders look like `REPLACE_ME` and are explained where they appear.
 
 ## 0. Prerequisites (once)
 
-- An AWS account with billing alerts enabled and an IAM Identity Center or IAM user (with MFA) that can create IAM roles,
+- An AWS account with billing alerts enabled and an MFA-protected IAM user (logged in with `aws login`, no access keys; IAM Identity Center is not available on this account, see [phase5-plan.md](phase5-plan.md)) that can create IAM roles,
   VPCs, RDS, S3, CloudFront, ECS, ECR, SQS, ACM, Route 53 records, Secrets Manager and Budgets.
 - A **domain you control with a public Route 53 hosted zone** whose name servers are already delegated at the
   registrar. Pick a host name for the app, e.g. `ryucloud.example.com`; media will be `media.ryucloud.example.com`.
   (Signed cookies cannot work on `*.cloudfront.net`/`*.amazonaws.com` host names.)
-- Installed on the VM: Docker, AWS CLI v2, Terraform ≥ 1.10, `jq`, `openssl`.
+- Installed on the VM: Docker, AWS CLI v2, `jq`, `openssl`. Region, domain choices and AWS CLI / IAM Identity Center
+  setup are in [aws-setup.md](aws-setup.md).
+- **Terraform runs in Docker, pinned to 1.10.5** (the version CI uses). Do not run `plan`/`apply` with a newer host
+  Terraform: it rewrites the state's version marker and 1.10.5 can then no longer read the state. In this runbook,
+  every `terraform ...` command means the wrapper below (it forwards your AWS credentials to the container for that one command):
 
 ```bash
-terraform version && aws --version && jq --version && openssl version
+cd ~/projects/RyuCloud
+tf() { ~/projects/RyuCloud/scripts/aws-terraform.sh "$@"; }     # paste once per shell session
+tf version                                                       # must print Terraform v1.10.5
+export TERRAFORM=~/projects/RyuCloud/scripts/aws-terraform.sh    # lets scripts/aws-run-migrations.sh read outputs the same way
+```
+
+```bash
+tf version && aws --version && jq --version && openssl version
 aws sts get-caller-identity          # confirm account and identity
 aws route53 list-hosted-zones-by-name --dns-name example.com --query 'HostedZones[0].Id'   # your zone ID is the part after /hostedzone/
 ```
@@ -35,8 +46,8 @@ docker compose run --rm backend go test ./... -count=1
 docker compose run --rm --no-deps frontend npm test
 docker compose run --rm --no-deps frontend npm run typecheck
 # Terraform: formatting + validation, no credentials needed
-terraform -chdir=infra/terraform fmt -recursive
-scripts/validate-terraform.sh
+tf -chdir=infra/terraform fmt -recursive
+scripts/validate-terraform.sh      # uses the host terraform; offline only, touches no state
 ```
 
 ## 2. Create the Terraform state bucket (once, ≈ $0)
@@ -45,9 +56,10 @@ State holds resource IDs and attributes, so it gets its own private, versioned, 
 global: replace `REPLACE_STATE_BUCKET` with something unique (e.g. `ryucloud-tfstate-<account-id>`).
 
 ```bash
-export AWS_REGION=us-east-1
+export AWS_REGION=us-west-2
 STATE_BUCKET=REPLACE_STATE_BUCKET
-aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION"   # outside us-east-1 add: --create-bucket-configuration LocationConstraint="$AWS_REGION"
+aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"     # required outside us-east-1
 aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" --versioning-configuration Status=Enabled
 aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
@@ -86,9 +98,9 @@ resources are billed from this point (≈ $45–55/month before any task runs).
 
 ```bash
 cd ~/projects/RyuCloud/infra/terraform
-terraform init -backend-config=backend.hcl
-terraform plan -out=tfplan        # READ IT: nothing should be destroyed on a first run
-terraform apply tfplan
+tf init -backend-config=backend.hcl
+tf plan -out=tfplan        # READ IT: nothing should be destroyed on a first run
+tf apply tfplan
 ```
 
 Expect roughly 15–30 minutes: RDS and the CloudFront distribution are slow, and ACM waits for DNS validation.
@@ -103,18 +115,20 @@ Then:
 ```bash
 cd ~/projects/RyuCloud/infra/terraform
 aws secretsmanager put-secret-value \
-  --secret-id "$(terraform output -raw cloudfront_private_key_secret)" \
+  --secret-id "$(tf output -raw cloudfront_private_key_secret)" \
   --secret-string "file://$HOME/.ryucloud/cloudfront_private_key.pem"
 ```
 
 ## 6. Build and push the first images (BILLS: small ECR storage)
 
-Tags are immutable, so use the commit SHA. The commit must exist locally (`git rev-parse` fails otherwise).
+Tags are immutable, so use the full commit SHA (the same tag the Deploy workflow uses). Images are built from the
+**committed** tree: commit first, and check `git status` is clean. Steps 6 and 7 use the shell variables set here, so
+run both in the same terminal session.
 
 ```bash
 cd ~/projects/RyuCloud
-export AWS_REGION=us-east-1
-TAG="$(git rev-parse --short=12 HEAD)"
+export AWS_REGION=us-west-2
+TAG="$(git rev-parse HEAD)"
 PREFIX=ryucloud-prod            # <project>-<environment>
 REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
@@ -132,7 +146,7 @@ docker push "$REGISTRY/$PREFIX/frontend:$TAG"
 
 ```bash
 cd ~/projects/RyuCloud
-CLUSTER="$(terraform -chdir=infra/terraform output -raw ecs_cluster)"
+CLUSTER="$(tf -chdir=infra/tf output -raw ecs_cluster)"
 
 # Register a migrate task revision with the new API image, then run it (BILLS: ~1 minute of Fargate)
 scripts/aws-roll-service.sh "$CLUSTER" - "$PREFIX-migrate" migrate "$REGISTRY/$PREFIX/api:$TAG"
@@ -149,14 +163,14 @@ Now start them (BILLS: Fargate tasks and task public IPs, ≈ $35–70/month):
 ```bash
 cd ~/projects/RyuCloud/infra/terraform
 vi terraform.tfvars        # change to: deploy_services = true
-terraform plan -out=tfplan
-terraform apply tfplan
+tf plan -out=tfplan
+tf apply tfplan
 ```
 
 ## 8. Verify
 
 ```bash
-APP=$(terraform -chdir=infra/terraform output -raw app_url)
+APP=$(tf -chdir=infra/tf output -raw app_url)
 curl -fsS "$APP/api/v1/health"          # {"status":"ok","version":"0.4.0"}
 curl -fsS "$APP/api/v1/health/ready"    # includes schema_version
 curl -sI "$APP/" | head -1              # HTTP/2 200
@@ -170,15 +184,15 @@ In the browser (`$APP`): register, upload a short clip, watch the status go `pro
 Then prove media is private:
 
 ```bash
-MEDIA=$(terraform -chdir=infra/terraform output -raw media_url)
+MEDIA=$(tf -chdir=infra/tf output -raw media_url)
 curl -sI "$MEDIA/videos/anything/hls/master.m3u8" | head -1       # HTTP/2 403 (no signature)
-BUCKET=$(terraform -chdir=infra/terraform output -raw media_bucket)
+BUCKET=$(tf -chdir=infra/tf output -raw media_bucket)
 curl -sI "https://$BUCKET.s3.amazonaws.com/videos/anything/hls/master.m3u8" | head -1   # 403 (bucket is private)
 ```
 
 In the browser dev tools (Application → Cookies) you should see three `CloudFront-*` cookies for the video, and the
 `.m3u8`/`.ts` requests going to `media.<domain>` with status 200. The CloudWatch dashboard URL is
-`terraform output dashboard_url`.
+`tf output dashboard_url`.
 
 Not yet verified by anyone: Safari native playback, behavior after the 2-hour cookie expiry, and a failover test.
 
@@ -190,13 +204,13 @@ Not yet verified by anyone: Safari native playback, behavior after the 2-hour co
 return the messages to the main queue:
 
 ```bash
-DLQ_URL=$(terraform -chdir=infra/terraform output -raw jobs_dlq_url)
+DLQ_URL=$(tf -chdir=infra/tf output -raw jobs_dlq_url)
 aws sqs receive-message --queue-url "$DLQ_URL" --max-number-of-messages 5 --visibility-timeout 30
 DLQ_ARN=$(aws sqs get-queue-attributes --queue-url "$DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
 aws sqs start-message-move-task --source-arn "$DLQ_ARN"        # moves them back to the original queue
 ```
 
-**Changing task configuration** (CPU, env vars, secrets): edit the `.tf` file, `terraform apply`, then roll the service
+**Changing task configuration** (CPU, env vars, secrets): edit the `.tf` file, `tf apply`, then roll the service
 onto the newest revision of its family (CI/the script copy the *latest* revision, so this keeps your change):
 
 ```bash
@@ -213,18 +227,31 @@ after 7 days).
 
 ## 10. GitHub Actions deployment (after the first manual deploy works)
 
-1. Set `github_repository = "OWNER/REPO"` in `terraform.tfvars`, `terraform apply`. Copy `terraform output github_deploy_role_arn`.
-2. In GitHub: **Settings → Environments → New environment → `production`**. Add yourself as a required reviewer **and set "Deployment branches and tags" to "Selected branches" → `main`**. The AWS role trusts the environment, so this branch restriction is what stops other branches from deploying (see [aws-audit.md](aws-audit.md), finding 1).
+1. Set `github_repository = "OWNER/REPO"` in `terraform.tfvars`, `tf apply`. Copy `tf output github_deploy_role_arn`.
+2. In GitHub: **Settings → Environments → New environment → `production`**. Add yourself as a required reviewer **and set "Deployment branches and tags" to "Selected branches" → `main`**. The AWS role trusts the environment, so this branch restriction is what stops other branches from deploying (see [aws-audit.md](aws-audit.md), finding 1). **Do not enable the AWS role (step 1) until this is done and checked.**
+   Required reviewers and branch rules on environments need a public repository or a paid GitHub plan; on a free private repository, leave `github_repository` empty and deploy by hand (steps 6–7).
+   The same thing from the terminal with the GitHub CLI (`gh auth login` first; replace `OWNER/REPO` and `YOUR_NUMERIC_USER_ID`, which is `gh api user --jq .id`):
+
+```bash
+gh api -X PUT repos/OWNER/REPO/environments/production --input - <<'JSON'
+{"reviewers":[{"type":"User","id":YOUR_NUMERIC_USER_ID}],
+ "deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}
+JSON
+gh api -X POST repos/OWNER/REPO/environments/production/deployment-branch-policies -f name=main -f type=branch
+# Verify: expect custom_branch_policies true, one policy named main, and a required_reviewers rule
+gh api repos/OWNER/REPO/environments/production --jq '{policy: .deployment_branch_policy, rules: [.protection_rules[].type]}'
+gh api repos/OWNER/REPO/environments/production/deployment-branch-policies --jq '.branch_policies[].name'
+```
 3. Add these **environment variables** (not secrets; none are sensitive):
 
 | Variable | Value |
 | --- | --- |
-| `AWS_DEPLOY_ROLE_ARN` | `terraform output github_deploy_role_arn` |
-| `AWS_REGION` | e.g. `us-east-1` |
+| `AWS_DEPLOY_ROLE_ARN` | `tf output github_deploy_role_arn` |
+| `AWS_REGION` | `us-west-2` |
 | `ECR_PREFIX` | `ryucloud-prod` |
-| `ECS_CLUSTER` | `terraform output ecs_cluster` |
-| `MIGRATE_SUBNETS` | `terraform output -json task_subnets \| jq -r 'join(",")'` |
-| `MIGRATE_SECURITY_GROUP` | `terraform output task_security_group` |
+| `ECS_CLUSTER` | `tf output ecs_cluster` |
+| `MIGRATE_SUBNETS` | `tf output -json task_subnets \| jq -r 'join(",")'` |
+| `MIGRATE_SECURITY_GROUP` | `tf output task_security_group` |
 
 4. **Actions → Deploy → Run workflow**, type `deploy`, approve in the environment gate. It builds, pushes, migrates and rolls
    the services. CI (`ci.yml`) runs automatically on pushes and pull requests and never touches AWS.
@@ -236,10 +263,10 @@ Only for a throwaway environment. `protect_data = true` (the default) blocks thi
 ```bash
 cd ~/projects/RyuCloud/infra/terraform
 # 1. In terraform.tfvars set:  protect_data = false   then apply so deletion protection is lifted
-terraform apply
+tf apply
 # 2. Review the destroy plan carefully, then:
-terraform plan -destroy -out=destroy.tfplan
-terraform apply destroy.tfplan
+tf plan -destroy -out=destroy.tfplan
+tf apply destroy.tfplan
 ```
 
 The state bucket from step 2 and the secret's 7-day recovery window are not removed by this.

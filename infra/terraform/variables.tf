@@ -27,11 +27,11 @@ variable "environment" {
 variable "aws_region" {
   description = "Region for everything except the CloudFront certificate (always us-east-1)."
   type        = string
-  default     = "us-east-1"
+  default     = "us-west-2"
 
   validation {
     condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]$", var.aws_region))
-    error_message = "aws_region must look like us-east-1."
+    error_message = "aws_region must look like us-west-2."
   }
 }
 
