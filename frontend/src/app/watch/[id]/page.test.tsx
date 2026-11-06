@@ -51,7 +51,11 @@ describe("WatchPage", () => {
 
   it("polls until processing finishes, then shows the player", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Two "queued" answers, not one: when the first response arrives the page starts polling, which
+    // re-runs its effect and fetches once more straight away. With a single "queued" answer that second
+    // fetch returned "ready" immediately, so "Queued" could vanish before the assertion ran (flaky under load).
     vi.mocked(api.getVideo)
+      .mockResolvedValueOnce(makeVideo({ status: "queued", processing_progress: 0 }))
       .mockResolvedValueOnce(makeVideo({ status: "queued", processing_progress: 0 }))
       .mockResolvedValue(makeVideo({ status: "ready", playback_url: "/api/v1/videos/vid-1/hls/master.m3u8" }));
     render(<WatchPage />);
