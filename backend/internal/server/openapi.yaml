@@ -53,6 +53,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/LoginRequest" } } } }
       responses:
         "200": { $ref: "#/components/responses/UserWithCookie" }
+        "429": { description: "`too_many_login_attempts`: 10 failed sign-ins for this e-mail within 15 minutes; see the `Retry-After` header", headers: { Retry-After: { schema: { type: integer }, description: Seconds to wait }}, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         default: { $ref: "#/components/responses/Error" }
   /auth/logout:
     post:

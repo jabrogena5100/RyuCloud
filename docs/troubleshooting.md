@@ -139,7 +139,7 @@ The backend has run fine since, so we treat it as a stale-state problem, not a k
 
 ## 8. Go dependencies are pinned for a reason
 
-The toolchain in the image is fixed (`GOTOOLCHAIN=local`, Go 1.25.x) and will not download a newer one.
+The toolchain in the image is fixed (`GOTOOLCHAIN=local`, Go 1.26.x) and will not download a newer one.
 `go mod tidy` pulls the *latest* release of any module you haven't pinned, and fails if that module needs a newer
 Go. So every direct dependency is pinned in `backend/go.mod` (for example `go-redis` v9.22.0, because v9.23.0
 needs Go 1.26). Don't run `go get -u`. To upgrade one module: `go get module@version` and run

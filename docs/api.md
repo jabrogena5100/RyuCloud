@@ -28,7 +28,9 @@ to turn both off.
 User object: `{id, email, display_name, created_at}`. Password hashes are never returned.
 
 Errors: `409 email_taken`, `401 invalid_credentials` (same response for unknown
-email and wrong password), `401 not_authenticated`.
+email and wrong password), `401 not_authenticated`, `429 too_many_login_attempts` (10 failed
+sign-ins for one e-mail address within 15 minutes; the response carries `Retry-After` in seconds, and a successful
+sign-in clears the count. The counter is in memory per API process).
 
 ## Channels
 

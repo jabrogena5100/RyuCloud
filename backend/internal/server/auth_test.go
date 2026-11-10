@@ -177,3 +177,28 @@ func TestTrustedOriginPostIsAllowed(t *testing.T) {
 	resp := app.browser().login("alice@example.com", defaultPassword, map[string]string{"Origin": trustedOrigin})
 	expectStatus(t, resp, http.StatusOK)
 }
+
+func TestRepeatedFailedLoginsAreThrottled(t *testing.T) {
+	app := newTestApp(t)
+	app.browser().register("alice@example.com")
+	b := app.browser()
+
+	for i := 0; i < 10; i++ {
+		expectStatus(t, b.login("alice@example.com", "wrong-password", nil), http.StatusUnauthorized)
+	}
+	// Even the correct password is refused once the address is limited, and with a hint to wait.
+	limited := b.login("alice@example.com", defaultPassword, nil)
+	expectStatus(t, limited, http.StatusTooManyRequests)
+	if limited.errorCode(t) != "too_many_login_attempts" {
+		t.Fatalf("unexpected body: %s", limited.body)
+	}
+	if limited.header.Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After header")
+	}
+	if b.sessionToken() != "" {
+		t.Fatal("a throttled login must not set a session cookie")
+	}
+	// Other addresses are unaffected.
+	app.browser().register("bob@example.com")
+	expectStatus(t, app.browser().login("bob@example.com", defaultPassword, nil), http.StatusOK)
+}

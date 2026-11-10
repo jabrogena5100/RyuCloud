@@ -39,6 +39,40 @@ recorded as reported, with the command used.
 | Terraform security/cost/dependency audit | **Done (read-only review)** | See [aws-audit.md](aws-audit.md). Findings are unverified by `plan`. |
 | `terraform plan` / `apply`, AWS deployment | **Not done, not authorised** | |
 
+## Re-verification, 2026-11-10 (Claude Code session; every row below was executed in that session and its output seen)
+
+Environment: Ubuntu VM, Docker 29.9.3, Compose 5.7.0, Node 22.22.1. Go is not installed on the host: Go commands ran in the
+Compose `backend`/`worker` containers. The stack had been stopped (VM reboot); `docker compose up -d --build` restarted it, no volume was touched.
+
+| Check | Result |
+| --- | --- |
+| `go build ./...`, `gofmt -l .`, `go vet ./...` (Go 1.25.14 image) | **Run: OK** (build ok, gofmt printed nothing, vet ok) |
+| `go test ./... -count=1` | **Run: OK** (all 9 test packages `ok`; `internal/server` 20 s) |
+| `worker go test ./internal/transcode -v` (real FFmpeg) | **Run: OK** (all tests PASS, 11.9 s) |
+| `S3_INTEGRATION_TEST=1 go test ./internal/integrations -run S3` (real MinIO) | **Run: OK** (3 tests PASS; was "Not run" before) |
+| Frontend `npm run typecheck` / `npm test` | **Run: OK** (exit 0; 14 files, 106/106 tests) |
+| `terraform fmt -check`, `init -backend=false`, `validate` with Terraform 1.10.5 in Docker | **Run: OK** ("configuration is valid"); also after the `aws_region` default change |
+| `/health`, `/health/ready` | **Run: OK** (`0.4.0`, `schema_version: 3`) |
+| `scripts/smoke-test.sh` | **Run: OK** |
+| `scripts/e2e-upload-test.sh` | **Run: OK** (23 checks) |
+| `scripts/e2e-processing-test.sh` | **Run: OK** (35 checks) |
+| `CRASH_TEST=1 scripts/e2e-processing-test.sh` | **Run: OK** (43 checks, worker SIGKILL recovered) |
+| `actionlint` 1.7.7 on `.github/workflows` | **Run: OK** (no findings) |
+| `shellcheck` 0.10.0 on the files CI checks (`aws-*.sh`, `validate-terraform.sh`) | **Run: OK** |
+| `shellcheck` on `scripts/e2e-*.sh` (not checked by CI) | **Run: info/style findings only** (SC2015, SC2034, SC2001); not fixed, they are test helpers |
+| `gitleaks` 8.21.2 over all 15 commits | **Run: OK** ("no leaks found"). `.env`, `*.tfvars`, `backend.hcl` are untracked and ignored. |
+| `govulncheck` v1.1.4 (after fix: Go 1.26.10, pgx 5.9.2, x/text 0.41.0, x/sync 0.22.0) | **Run: OK, "Your code is affected by 0 vulnerabilities"**. Before the fix: 13 reachable vulnerabilities (Go 1.25.14 stdlib: net/http, crypto/tls, crypto/x509, mime/multipart; `x/text` 0.26.0; `pgx` 5.7.5).  |
+| `npm audit --omit=dev` | **Run: 2 findings** (1 high, 1 moderate): `next` bundles a vulnerable `postcss` (source-map file read; build-time CSS processing, not reachable from request handling). The only offered fix is `next@16`, a breaking major upgrade. **Accepted for now**, see [project-status.md](project-status.md). |
+
+| Production image builds (`docker build --target prod` for api) | **Run: OK** for `api`. **Not verified:** the `worker` production image (its `apk add ffmpeg` step stalled for 24 min and was stopped; the worker-dev image, which also installs FFmpeg, built fine) and the `frontend` prod image (not started). CI's `images` job covers all three. |
+
+Defects found and fixed in this session:
+
+1. `docs/aws-runbook.md` used `tf -chdir=infra/tf output ...` (no such directory) in 5 commands; corrected to `infra/terraform`.
+2. `scripts/validate-terraform.sh` ran whatever Terraform was on the host (1.17.1 here), contradicting the 1.10.5 pin; it now uses Docker 1.10.5 when the host version differs.
+4. Fixed the 13 govulncheck findings by moving the toolchain image to Go 1.26.10 and bumping pgx, x/text and x/sync; after that `go vet`, `go test ./...` (all 9 packages), the transcode tests, smoke, upload (23) and `CRASH_TEST=1` processing (43 checks) were rerun on the new code and passed.
+3. No limit on failed sign-ins: added a per-email limiter (10 failures / 15 min, 429 `too_many_login_attempts`, `Retry-After`), with unit and HTTP tests (`TestRepeatedFailedLoginsAreThrottled` PASS).
+
 ## Phase 5: AWS deployment, cloud verification and production readiness
 
 Phase 4 (local implementation and verification) is complete. Phase 5 is everything that needs a real AWS account; its plan,

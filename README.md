@@ -17,7 +17,7 @@ See [docs/aws-architecture.md](docs/aws-architecture.md), [docs/aws-costs.md](do
 | Layer | Tech |
 | --- | --- |
 | Frontend | Next.js (App Router), React, TypeScript, Tailwind CSS · Vitest + Testing Library |
-| Backend | Go 1.25, standard-library `net/http` routing · `go test` |
+| Backend | Go 1.26 toolchain (`go 1.25.0` minimum), standard-library `net/http` routing · `go test` |
 | Data | PostgreSQL 17 via `pgx`, SQL migrations with `goose` (embedded in the binary) |
 | Object storage | MinIO locally, AWS SDK for Go v2 behind a storage interface (AWS S3 later by configuration) |
 | Auth | Argon2id password hashing, server-side sessions in an HttpOnly cookie |
@@ -339,8 +339,8 @@ docker compose down -v                      # stop AND delete the database, uplo
 
 ## Go toolchain and dependency pins
 
-All Go code builds with one toolchain: **Go 1.25** (`go 1.25.0` in `backend/go.mod`; the image tag is
-`ARG GO_VERSION=1.25.14` in `backend/Dockerfile`, shared by the dev, worker-dev and build stages; the runtime
+All Go code builds with one toolchain: **Go 1.26.10** (`go 1.25.0` is the minimum language version in `backend/go.mod`; the image tag is
+`ARG GO_VERSION=1.26.10` in `backend/Dockerfile`, shared by the dev, worker-dev and build stages; the runtime
 stages contain no Go). Containers set `GOTOOLCHAIN=local`, so Go never downloads a different toolchain.
 
 Consequence: a dependency whose own `go` line is newer than 1.25 makes `go mod tidy` fail with

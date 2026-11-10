@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/jabrogena5100/RyuCloud/backend/internal/httpx"
 )
@@ -91,14 +92,22 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	// Refuse before hashing anything, so guessing cannot also be used to burn CPU.
+	if blocked, wait := s.logins.blocked(email); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		return errTooManyLogins
+	}
+
 	ctx := r.Context()
 	user, ok, err := s.authenticate(ctx, email, password)
 	if err != nil {
 		return err
 	}
 	if !ok {
+		s.logins.fail(email)
 		return errInvalidCredentials
 	}
+	s.logins.success(email)
 	if _, err := s.db.Exec(ctx, `DELETE FROM auth_sessions WHERE user_id = $1 AND expires_at <= now()`, user.ID); err != nil {
 		return err
 	}

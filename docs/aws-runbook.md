@@ -47,7 +47,7 @@ docker compose run --rm --no-deps frontend npm test
 docker compose run --rm --no-deps frontend npm run typecheck
 # Terraform: formatting + validation, no credentials needed
 tf -chdir=infra/terraform fmt -recursive
-scripts/validate-terraform.sh      # uses the host terraform; offline only, touches no state
+scripts/validate-terraform.sh      # offline only, touches no state; runs Terraform 1.10.5 in Docker if the host version differs
 ```
 
 ## 2. Create the Terraform state bucket (once, ≈ $0)
@@ -146,7 +146,7 @@ docker push "$REGISTRY/$PREFIX/frontend:$TAG"
 
 ```bash
 cd ~/projects/RyuCloud
-CLUSTER="$(tf -chdir=infra/tf output -raw ecs_cluster)"
+CLUSTER="$(tf -chdir=infra/terraform output -raw ecs_cluster)"
 
 # Register a migrate task revision with the new API image, then run it (BILLS: ~1 minute of Fargate)
 scripts/aws-roll-service.sh "$CLUSTER" - "$PREFIX-migrate" migrate "$REGISTRY/$PREFIX/api:$TAG"
@@ -170,7 +170,7 @@ tf apply tfplan
 ## 8. Verify
 
 ```bash
-APP=$(tf -chdir=infra/tf output -raw app_url)
+APP=$(tf -chdir=infra/terraform output -raw app_url)
 curl -fsS "$APP/api/v1/health"          # {"status":"ok","version":"0.4.0"}
 curl -fsS "$APP/api/v1/health/ready"    # includes schema_version
 curl -sI "$APP/" | head -1              # HTTP/2 200
@@ -184,9 +184,9 @@ In the browser (`$APP`): register, upload a short clip, watch the status go `pro
 Then prove media is private:
 
 ```bash
-MEDIA=$(tf -chdir=infra/tf output -raw media_url)
+MEDIA=$(tf -chdir=infra/terraform output -raw media_url)
 curl -sI "$MEDIA/videos/anything/hls/master.m3u8" | head -1       # HTTP/2 403 (no signature)
-BUCKET=$(tf -chdir=infra/tf output -raw media_bucket)
+BUCKET=$(tf -chdir=infra/terraform output -raw media_bucket)
 curl -sI "https://$BUCKET.s3.amazonaws.com/videos/anything/hls/master.m3u8" | head -1   # 403 (bucket is private)
 ```
 
@@ -204,7 +204,7 @@ Not yet verified by anyone: Safari native playback, behavior after the 2-hour co
 return the messages to the main queue:
 
 ```bash
-DLQ_URL=$(tf -chdir=infra/tf output -raw jobs_dlq_url)
+DLQ_URL=$(tf -chdir=infra/terraform output -raw jobs_dlq_url)
 aws sqs receive-message --queue-url "$DLQ_URL" --max-number-of-messages 5 --visibility-timeout 30
 DLQ_ARN=$(aws sqs get-queue-attributes --queue-url "$DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
 aws sqs start-message-move-task --source-arn "$DLQ_ARN"        # moves them back to the original queue

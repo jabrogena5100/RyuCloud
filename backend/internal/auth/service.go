@@ -35,6 +35,13 @@ var (
 	errNotAuthenticated   = httpx.NewError(http.StatusUnauthorized, "not_authenticated", "Authentication required.")
 	errInvalidCredentials = httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
 	errEmailTaken         = httpx.NewError(http.StatusConflict, "email_taken", "An account with this email already exists.")
+	errTooManyLogins      = httpx.NewError(http.StatusTooManyRequests, "too_many_login_attempts", "Too many failed sign-in attempts. Try again later.")
+)
+
+// Failed sign-ins allowed per e-mail address per window before further attempts are refused.
+const (
+	loginMaxFailures = 10
+	loginWindow      = 15 * time.Minute
 )
 
 // Service handles authentication and exposes middleware for other modules.
@@ -43,12 +50,13 @@ type Service struct {
 	cookieName string
 	ttl        time.Duration
 	secure     bool
+	logins     *loginLimiter
 }
 
 // NewService returns an auth service. secureCookie must be true whenever the
 // site is served over HTTPS.
 func NewService(db *pgxpool.Pool, cookieName string, ttl time.Duration, secureCookie bool) *Service {
-	return &Service{db: db, cookieName: cookieName, ttl: ttl, secure: secureCookie}
+	return &Service{db: db, cookieName: cookieName, ttl: ttl, secure: secureCookie, logins: newLoginLimiter(loginMaxFailures, loginWindow)}
 }
 
 // execer is satisfied by both *pgxpool.Pool and pgx.Tx.

@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # One Go toolchain for every stage that compiles or runs Go (dev, worker-dev, build). It must match the
-# "go" line in go.mod (1.25.0 is the minimum language version; this is the patch release we build with).
+# "go" line in go.mod (1.25.0 is the minimum language version; this is the patch release we build with; 1.26.10 carries the standard-library security fixes that govulncheck reported against 1.25.14).
 # The runtime stages (prod, worker) contain no Go at all. GOTOOLCHAIN=local below stops Go from silently
 # downloading a different toolchain, so a dependency that needs a newer Go fails loudly instead.
-ARG GO_VERSION=1.25.14
+ARG GO_VERSION=1.26.10
 FROM golang:${GO_VERSION}-alpine AS base
 # Static binaries; never auto-download a different Go toolchain.
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
