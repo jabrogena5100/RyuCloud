@@ -25,7 +25,7 @@ Last updated 2026-11-10. Evidence for every claim is in [verification.md](verifi
 | Login limiter is in memory, per API process, keyed by e-mail | Accepted; one API task today. A WAF or shared store would be the upgrade. |
 | `shellcheck` style findings in `scripts/e2e-*.sh` (not in CI scope) | Accepted. |
 | Audit findings 1-23 in [aws-audit.md](aws-audit.md) | Unchanged; finding 1 (GitHub `production` environment) needs your GitHub settings. |
-| Docker builds can stall on network steps in this VM (one `compose build` hung ~40 min until restarted) | Retry; not a repository defect. |
+| Docker builds stall on the default bridge network in this VM (about 5 KB/s vs 13 MB/s on the host network; see verification.md diagnosis) | Not a repo defect; build with `docker build --network host`. Lockfile verified in sync. |
 
 ## Blocked on you (not done, not authorised)
 

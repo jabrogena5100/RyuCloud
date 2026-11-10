@@ -64,7 +64,8 @@ Compose `backend`/`worker` containers. The stack had been stopped (VM reboot); `
 | `govulncheck` v1.1.4 (after fix: Go 1.26.10, pgx 5.9.2, x/text 0.41.0, x/sync 0.22.0) | **Run: OK, "Your code is affected by 0 vulnerabilities"**. Before the fix: 13 reachable vulnerabilities (Go 1.25.14 stdlib: net/http, crypto/tls, crypto/x509, mime/multipart; `x/text` 0.26.0; `pgx` 5.7.5).  |
 | `npm audit --omit=dev` | **Run: 2 findings** (1 high, 1 moderate): `next` bundles a vulnerable `postcss` (source-map file read; build-time CSS processing, not reachable from request handling). The only offered fix is `next@16`, a breaking major upgrade. **Accepted for now**, see [project-status.md](project-status.md). |
 
-| Production image builds (`docker build --target prod` for api) | **Run: OK** for `api`. **Not verified:** the `worker` production image (its `apk add ffmpeg` step stalled for 24 min and was stopped; the worker-dev image, which also installs FFmpeg, built fine) and the `frontend` prod image (not started). CI's `images` job covers all three. |
+| Production image builds (2026-11-10, `docker build --network host --target <t>`, 20 min timeout) | **Run: OK, all three.** `api` (target `prod`) 157 s, 30.3 MB; `worker` (target `worker`, includes `apk add ffmpeg`) 49 s, 212 MB; `frontend` (target `prod`, `npm ci` strict) 466 s, 354 MB. Not run: the containers from these images were not started (the Compose stack uses the dev targets). buildx prints `fatal: bad object HEAD` after each build because the repo is damaged (see incident); it does not affect the build. |
+| Full local suite re-run on final code (2026-11-10) | **Run: OK.** Stack started with `docker compose up -d` (no volumes touched). Readiness 200; gofmt/build/vet OK; `go test ./... -count=1` 9 packages `ok`, 0 FAIL; transcode (real FFmpeg) ok; S3/MinIO integration ok; frontend typecheck OK and 14 files / 106 tests pass; `validate-terraform.sh` "configuration is valid"; smoke passed; upload E2E 23 checks; processing E2E 35 checks; `CRASH_TEST=1` processing 43 checks. |
 
 Defects found and fixed in this session:
 
@@ -105,3 +106,15 @@ An interrupted commit left `refs/heads/main` pointing at a zero-byte commit obje
 pointing at a zero-byte tree (`4eddbbd…`). The last intact commit is `cdf38f2` ("Replace logo with cartoon dragon mascot and
 add favicon"), identical to `origin/main`. See the recovery procedure given in the session; update this section when it
 is complete.
+
+## Docker build stall diagnosis (2026-11-10)
+
+| Finding | Evidence |
+| --- | --- |
+| **Lockfile is in sync; CI's `npm ci` is not affected.** | `npm ci` on a scratch copy of `frontend/package.json` + `package-lock.json` (node:22-alpine, same npm 10.9.9) finished: "added 201 packages", exit 0; no EUSAGE/ERESOLVE/sync errors. |
+| **Root cause: the Docker default bridge network on this VM is throttled, not a repository defect.** | The VM sits behind a phone-hotspot-style link (CLAT at 192.0.0.1, path MTU about 1400, IPv6 unreachable). The same 31 MB tarball downloads in 2.3 s with `--network host` (about 13 MB/s) but about 5 KB/s on the bridge; `next` alone took 384 s inside the bridge container. MTU 1400 did not fix it; TTL 65 helped partly (about 70-100 KB/s), so the carrier is likely throttling forwarded (NAT) traffic. Not fully proven. |
+| Why the build "hung" | `npm ci` hit the slow path and failed; `|| npm install` then re-resolved the whole tree over the same slow path. |
+| Fix in repo | `frontend/Dockerfile`: removed the `|| npm install` fallback (it would hide lockfile drift); `npm ci` is strict, with `fetch-retries 3` and `fetch-timeout 120000`. |
+| Workaround on this VM | `docker build --network host ...` (all three builds above used it). `docker compose build` has no equivalent flag; use `build: network: host` locally only if needed. |
+
+**Update 2026-11-10:** the damage recurred after the VM crash (VM boot 08:46; 25 zero-byte objects under `.git/objects`, all modified 07:27, including commit `2d0b2c7`). A bare clone of `origin` into scratch space passed `git fsck`, and all 25 objects exist on GitHub; `origin/main` is `2d0b2c7` ("Throttle failed logins, fix Go vulnerabilities…"), so the earlier local work is already pushed. Repair = remove the empty files and re-fetch (commands in the session handoff). Uncommitted at the time: `frontend/Dockerfile`, `docs/verification.md`, `docs/project-status.md`.

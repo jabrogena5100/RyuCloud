@@ -6,10 +6,16 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package.json package-lock.json* ./
-# npm ci when a lockfile is committed (reproducible). If the lockfile is stale (for example right
-# after a dependency was added to package.json) fall back to npm install so the build still works;
-# then refresh and commit the lockfile (see README: "Upgrading to Phase 3").
-RUN if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi
+# Strict, reproducible install: the lockfile is required and `npm ci` fails if it is out of sync
+# with package.json. There is deliberately no `|| npm install` fallback: it hid lockfile drift and,
+# on a failing network, re-resolved the whole tree and hung. Retries/timeouts are bounded so a bad
+# network fails the build in minutes instead of stalling it. After changing package.json, run
+# `npm install` in frontend/ and commit the updated package-lock.json.
+COPY package-lock.json ./
+RUN npm config set fetch-retries 3 \
+ && npm config set fetch-retry-mintimeout 5000 \
+ && npm config set fetch-timeout 120000 \
+ && npm ci --no-audit --no-fund
 
 # Development image. docker-compose.yml bind-mounts ./frontend over /app and keeps
 # node_modules and .next in container-owned volumes.
