@@ -85,7 +85,7 @@ decisions, blockers and checklist are in [phase5-plan.md](phase5-plan.md). Each 
 | AWS CLI v2 installed (2.39.5; `aws login` and `export-credentials --format env-no-export` present) | **Run: OK** (owner's terminal output) |
 | Account plan: Free; root MFA on | **Reported** by the owner |
 | IAM Identity Center | **Blocked**: "not available to your project" on the Free plan (reported); not worked around, Organizations deliberately not enabled |
-| Keyless login (IAM user + MFA, `aws login`; no access keys) | Not done |
+| Keyless login (IAM user + MFA, `aws login`; no access keys) | **Run: OK (owner's output, 2026-11-10)**: `aws sts get-caller-identity --profile ryucloud` returned `arn:aws:iam::<account>:user/ryucloud-admin`. A first attempt returned `assumed-role/AccountFullAccessRole` because the browser reused an existing console session; fixed by signing in as the IAM user in a private window. **Not yet run:** the `export-credentials` name check (short-lived credentials) and `aws sts get-caller-identity` without `--profile`. |
 | Account upgrade to Paid plan | Not done, not authorised |
 | Region chosen (`us-west-2`); domain | Region decided; **domain not purchased** (blocker) |
 | Terraform state bucket created | Not done, not authorised |

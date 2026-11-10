@@ -128,7 +128,7 @@ Each step has an exit test. Stop at any failed test. Steps marked **BILLS** cost
 **Step 1: Account and authentication (free)**
 - [ ] Billing: create the account-level budget and alerts (§5).
 - [ ] Create the IAM group/user with MFA and no access keys (§4); sign out of root.
-- [ ] `aws login --profile ryucloud`; `aws sts get-caller-identity` shows `user/ryucloud-admin`; the `export-credentials` name check in §4 passes.
+- [~] `aws login --profile ryucloud`; `aws sts get-caller-identity` shows `user/ryucloud-admin` (**done 2026-11-10**, owner's output, account ID redacted); the `export-credentials` name check in §4 is **not yet run**.
 - [ ] `scripts/aws-terraform.sh version` prints `Terraform v1.10.5` (first real test of the wrapper).
 
 **Step 2: Upgrade decision (GATE, BILLS potentially)**
