@@ -269,4 +269,4 @@ tf plan -destroy -out=destroy.tfplan
 tf apply destroy.tfplan
 ```
 
-The state bucket from step 2 and the secret's 7-day recovery window are not removed by this.
+The state bucket from step 2 is not removed by this. After the destroy run `scripts/aws-audit.sh` (read-only). The full session procedure, evidence capture and cost checks are in [temporary-deployment.md](temporary-deployment.md).

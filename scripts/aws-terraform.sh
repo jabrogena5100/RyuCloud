@@ -24,7 +24,7 @@ if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
     exit 1
   fi
   creds="$(aws configure export-credentials --format env-no-export)" || {
-    echo "error: could not get credentials; run 'aws sso login' and set AWS_PROFILE" >&2
+    echo "error: could not get credentials; run 'aws login --profile ryucloud' (or 'aws sso login') and set AWS_PROFILE" >&2
     exit 1
   }
   set -a

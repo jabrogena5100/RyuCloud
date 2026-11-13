@@ -11,6 +11,8 @@ check the [AWS Pricing Calculator](https://calculator.aws/), or the Price List A
 **Correction (Phase 5):** re-adding the rows below gives about $90 to $117, not the "80 to 105" first published. The idle
 figure with no tasks running is about $50 (ALB 22 + 2 ALB addresses 7 + RDS 14 + secrets, DNS, alarms, logs, ECR about 6).
 
+Session-based cost estimates (8 h, 24 h, 7 days) and persistent items are in [temporary-deployment.md](temporary-deployment.md) §7.
+
 ## Fixed monthly cost with the default settings (always on, no traffic)
 
 | Item | Basis | ≈ USD/month |

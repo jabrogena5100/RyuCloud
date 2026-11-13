@@ -15,6 +15,7 @@ no Identity Center or Organizations has been enabled, no account upgrade has bee
 | AWS account | New; on the AWS **Free plan**. Root MFA is on. |
 | Terraform | 1.10.5 in Docker (`scripts/aws-terraform.sh`), the same version as CI. |
 | Development model | **Hybrid** (below). |
+| Deployment strategy (2026-11-13) | **Temporary sessions only**, no 24/7 until job-search time. Procedure, retain/destroy table, costs for 8 h / 24 h / 7 d, domain advice and the post-destroy audit are in [temporary-deployment.md](temporary-deployment.md); session evidence goes in [deployment-log.md](deployment-log.md). |
 | Hard constraints | No Organizations, no Identity Center activation, no account upgrade, no access keys, no domain purchase, no resources, no `apply`/deploy without a separate explicit instruction. |
 
 ## 2. Long-term strategy: hybrid development
@@ -163,6 +164,7 @@ Each step has an exit test. Stop at any failed test. Steps marked **BILLS** cost
 - [ ] `tf plan -destroy -out=destroy.tfplan`; read it; apply it only when you are sure. With `protect_data = false` from the start no extra apply is needed.
 - [ ] Check nothing is left: `aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=ryucloud --region us-west-2` (read-only), plus the console for the
   load balancer, RDS and NAT/EIP pages. The state bucket, hosted zone, domain and the manual budget remain by design.
+- [ ] Run `scripts/aws-audit.sh` (read-only); it must report nothing left. See [temporary-deployment.md](temporary-deployment.md) §5.
 - [ ] Next day: Billing → Cost Explorer; confirm daily cost is near zero.
 
 **Step 10: Production readiness (only for a long-running deployment)**
