@@ -81,24 +81,52 @@ decisions, blockers and checklist are in [phase5-plan.md](phase5-plan.md). Each 
 
 | Step | Status |
 | --- | --- |
-| Pre-plan review of runbook, workflow, IAM, network and cost (repository only; no AWS access) | **Done**: [aws-audit.md](aws-audit.md) findings 1–23 |
+| Pre-plan review of runbook, workflow, IAM, network and cost (repository only; no AWS access) | **Done**: [aws-audit.md](aws-audit.md) findings 1-23 |
 | AWS CLI v2 installed (2.39.5; `aws login` and `export-credentials --format env-no-export` present) | **Run: OK** (owner's terminal output) |
-| Account plan: Free; root MFA on | **Reported** by the owner |
-| IAM Identity Center | **Blocked**: "not available to your project" on the Free plan (reported); not worked around, Organizations deliberately not enabled |
-| Keyless login (IAM user + MFA, `aws login`; no access keys) | **Run: OK (owner's output, 2026-11-10)**: `aws sts get-caller-identity --profile ryucloud` returned `arn:aws:iam::<account>:user/ryucloud-admin`. A first attempt returned `assumed-role/AccountFullAccessRole` because the browser reused an existing console session; fixed by signing in as the IAM user in a private window. **Not yet run:** the `export-credentials` name check (short-lived credentials) and `aws sts get-caller-identity` without `--profile`. |
+| Keyless login (IAM user + MFA, `aws login`; no access keys) | **Run: OK** (owner's output, 2026-11-10); session re-checked valid 2026-11-13 (read-only, below) |
+| `export-credentials` returned the four credential variable names | **User-reported OK** (not re-run) |
+| `scripts/aws-terraform.sh version` printed `Terraform v1.10.5` | **User-reported OK** (not re-run) |
+| `scripts/validate-terraform.sh` -> "Success! The configuration is valid." | **User-reported OK**; **re-run by me 2026-11-13: OK** (`fmt -check`, `init -backend=false`, `validate`, Terraform 1.10.5 in Docker) |
+| Domain purchased | **User-reported** 2026-11-13. Not verifiable from this account: not in Route 53 Domains (below) |
+| Hosted zone created / DNS delegated / ACM certificates validated | **Not done** (no zone exists; no ACM certificates exist) |
+| Account plan (Free vs Paid) | **Unverified**: not readable from the CLI; check Billing → Account plan |
+| Root MFA on | **Reported on by the owner, but the IAM account summary says off (`AccountMFAEnabled: 0`)**: verify in the console |
+| AWS Organization | **Found read-only; explained by the owner (user-reported)**: created when upgrading to use Identity Center; this account is the management account (below) |
+| IAM Identity Center | **Instance exists in `us-east-1`** (read-only; none in us-east-2/us-west-2), delegated admin account present. The 2026-11-06 "not available" message predates the upgrade (user-reported) |
+| Account-level budgets / billing alerts | **No budgets exist** (read-only); alert preferences unverifiable from the CLI |
 | Account upgrade to Paid plan | Not done, not authorised |
-| Region chosen (`us-west-2`); domain | Region decided; **domain not purchased** (blocker) |
-| Terraform state bucket created | Not done, not authorised |
-| `scripts/aws-terraform.sh` (Terraform 1.10.5 in Docker) exercised | Not done |
-| `terraform validate` after the `aws_region` default change | Not done: run `scripts/validate-terraform.sh` |
+| Terraform state bucket created; CloudFront key pair; `backend.hcl`; `terraform.tfvars` | Not done (files absent) |
 | `terraform plan` reviewed (including the audit's unverified items) | Not done |
 | `terraform apply` (first, `deploy_services = false`) | Not done, not authorised |
 | Images pushed, migrations run, services started | Not done, not authorised |
 | Cloud checks: runbook step 8 (health, playback, private-media 403s, alarms, SNS confirmation) | Not done |
-| GitHub `production` environment restricted to `main` and verified (audit finding 1) | Not done |
+| GitHub: secret scanning + push protection | **Run: enabled** (read-only 2026-11-13) |
+| GitHub: branch ruleset on the default branch | **Run: OK 2026-11-13** (active; no deletion, no force-push; 7 required CI checks; admin bypass) |
+| GitHub: `production` environment restricted to `main` (audit finding 1), fork-PR approval for all outside collaborators | Not done (no environment as of 2026-11-13; fork approval last seen as `first_time_contributors`) |
 | Deploy workflow run once end to end | Not done |
-| Teardown rehearsal (`destroy`, then a tag search shows nothing left) | Not done |
+| `scripts/aws-audit.sh` | Written and syntax-checked; never run against a live stack |
+| Teardown rehearsal (`destroy`, then the audit shows nothing left) | Not done |
 | Production readiness: backups/restore test, alarms fired once, cost check after one week | Not done |
+
+### Pre-deployment readiness checks (2026-11-13, read-only, run by me with profile `ryucloud`)
+
+Account IDs, ARNs and the account owner's email are redacted or omitted. Account structure per owner (user-reported): the management account's root user hosts `ryucloud-admin`; the Organization was created on upgrade for Identity Center.
+
+| Check | Result |
+| --- | --- |
+| `sts get-caller-identity` | Valid session; ARN ends `user/ryucloud-admin` (not root). Profile region `us-west-2` |
+| IAM user | MFA device registered; 0 access keys; group `ryucloud-admins` has `AdministratorAccess`, `SignInLocalDevelopmentAccess` |
+| `iam get-account-summary` | `AccountMFAEnabled: 0`, `AccountAccessKeysPresent: 0` (root) |
+| `route53domains list-domains` / `list-operations` (us-east-1) | Both empty |
+| `route53 list-hosted-zones` | Empty |
+| `acm list-certificates` (us-west-2, us-east-1) | 0 and 0 |
+| Resource search | 0 tagged resources in `us-west-2`; 5 in `us-east-1`, all non-RyuCloud (4 Organization SCPs, 1 payment instrument); 0 S3 buckets, 0 EC2 instances, 0 Elastic IPs; 1 VPC (not inspected, presumably the default) |
+| `budgets describe-budgets` | None |
+| `ce get-cost-and-usage` (2026-11-01 to 11-13) | `-0` USD |
+| `freetier get-account-plan-state` | Error "Missing data for account": plan not verifiable |
+| `organizations describe-organization` | Exists, feature set `ALL`; caller is the management account. 4 accounts; the one named `RyuCloud` is `SUSPENDED`/`CLOSED` (joined 2026-11-06). Enabled service access includes `sso`, `iam`, `account`. 7 SCPs: root has the managed-account policy (denies `sso:CreateInstance`, leaving the Organization, role changes under `managed/`) and a region policy (us-east-1, us-east-2, us-west-2; in `us-west-2` it denies everything except a 21-service allow-list that does **not** include ECS, RDS, ELB, ECR, SQS, S3 and others). Four `BudgetsSpendLimitDeny*` SCPs are attached to nothing. SCPs do not affect the management account, which is the account this profile uses; this has **not** been proven by an apply. |
+| `sso-admin list-instances` | 1 instance in `us-east-1`; 0 in `us-east-2` and `us-west-2` (the earlier us-west-2-only check had missed it) |
+| GitHub (`gh api`) | Public repo; secret scanning and push protection enabled; default workflow permission `read`; fork approval `first_time_contributors`; no `production` environment; `main` has no protection or ruleset; CI success on `9eff787` |
 
 ## Git repository incident (2026-11-05)
 

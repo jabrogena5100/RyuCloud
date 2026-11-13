@@ -1,22 +1,23 @@
 # Phase 5: AWS deployment, cloud verification and production readiness
 
 Phase 4 (local implementation and verification) is complete; see [verification.md](verification.md). Phase 5 is
-everything that needs a real AWS account. **Status: preparation only. Nothing exists in AWS, no domain is registered,
-no Identity Center or Organizations has been enabled, no account upgrade has been made, no access keys exist.**
+everything that needs a real AWS account. **Status (2026-11-13): preparation only. No application resources exist in AWS (read-only checks found none).
+The domain has been purchased (user-reported) but is not registered in this account's Route 53 and has no hosted zone yet. Keyless login works. No access keys exist.
+The account plan could not be verified from the CLI and no budgets exist yet. The AWS Organization found on 2026-11-13 is explained by the owner (§3, B6).**
 
 ## 1. Decisions (recorded 2026-11-06)
 
 | Topic | Decision |
 | --- | --- |
 | Region | `us-west-2` (Oregon). The CloudFront certificate stays in `us-east-1` (a CloudFront requirement, handled by the second provider). |
-| Domain | Buy one eventually, **not yet**. The stack cannot be applied without one (blocker B2). |
+| Domain | **Purchased 2026-11-13** (user-reported; name and registrar are not recorded in the repository). Registration is only the first part of blocker B2: hosted zone, DNS delegation and ACM validation are still open. |
 | Alert email | A personal address (value stays out of the repository). |
 | GitHub | Public repository, GitHub Free plan. |
-| AWS account | New; on the AWS **Free plan**. Root MFA is on. |
+| AWS account | The account this profile uses is the **Organization management account** ("Dreamin Management Account"); the owner upgraded the plan to enable IAM Identity Center (user-reported 2026-11-13; plan not verifiable from the CLI, confirm in Billing). Root MFA was reported on, but `iam get-account-summary` returned `AccountMFAEnabled: 0`: check in the console (step 2). |
 | Terraform | 1.10.5 in Docker (`scripts/aws-terraform.sh`), the same version as CI. |
 | Development model | **Hybrid** (below). |
 | Deployment strategy (2026-11-13) | **Temporary sessions only**, no 24/7 until job-search time. Procedure, retain/destroy table, costs for 8 h / 24 h / 7 d, domain advice and the post-destroy audit are in [temporary-deployment.md](temporary-deployment.md); session evidence goes in [deployment-log.md](deployment-log.md). |
-| Hard constraints | No Organizations, no Identity Center activation, no account upgrade, no access keys, no domain purchase, no resources, no `apply`/deploy without a separate explicit instruction. |
+| Hard constraints | Do not change the existing Organization, its other accounts or Identity Center; no access keys; no resources, `apply` or deploy without a separate explicit instruction. (The earlier "no Organizations / no upgrade" constraints were superseded: the owner created the Organization and upgraded the account.) |
 
 ## 2. Long-term strategy: hybrid development
 
@@ -27,16 +28,17 @@ no Identity Center or Organizations has been enabled, no account upgrade has bee
 | **Long-running public deployment** (`protect_data = true`) | Only when the recurring cost is acceptable. | About $90–117/month as designed; **not** $10–25 |
 
 Rules: develop and test locally first; use AWS to prove things only AWS can prove (IAM, ALB, CloudFront signing,
-SQS, RDS, ECS). Every temporary session ends with the teardown checklist (§8, step 9) and a check that nothing is left running.
+SQS, RDS, ECS). Every temporary session ends with the teardown checklist (§8, step 10) and a check that nothing is left running.
 
 ## 3. Blockers
 
 | # | Blocker | Status / how it clears |
 | --- | --- | --- |
-| B1 | **IAM Identity Center is unavailable on the Free plan.** The console says: "IAM Identity Center is not available to your project. To access this service, upgrade your account first, and then activate advanced features." (reported by the owner from the console) | **Open, by design not worked around.** Enabling Identity Center as an organization instance would also create an AWS Organization, which you ruled out (and AWS documents that joining/creating an Organization from a Free-plan account upgrades it and ends credit eligibility). The plan avoids Identity Center: see §4. |
-| B2 | **No domain.** ACM certificates, the ALB's HTTPS listener, the CloudFront alias and the signed cookies all need a name in a Route 53 hosted zone. | Open. Needs: a domain, a hosted zone, delegation. A first `apply` cannot succeed without it. A throw-away `plan` with a fake zone ID can be read for review but proves little. |
+| B1 | **IAM Identity Center was unavailable on the Free plan** (reported 2026-11-06). **Cleared 2026-11-13:** after the upgrade an instance exists in `us-east-1` (read-only check).** The console says: "IAM Identity Center is not available to your project. To access this service, upgrade your account first, and then activate advanced features." (reported by the owner from the console) | **Open, by design not worked around.** Enabling Identity Center as an organization instance would also create an AWS Organization, which you ruled out (and AWS documents that joining/creating an Organization from a Free-plan account upgrades it and ends credit eligibility). The plan avoids Identity Center: see §4. |
+| B2 | **Domain, hosted zone, delegation, certificates.** ACM certificates, the ALB's HTTPS listener, the CloudFront alias and the signed cookies all need a name in a Route 53 hosted zone. | **Partly cleared.** Domain **purchased** (user-reported). Still open: the public hosted zone (none exists), delegation of its four name servers at the registrar, then ACM validation, which Terraform performs during `apply`. A first `apply` cannot succeed until the zone is delegated. |
 | B3 | **Free-plan service limits are not known to me.** AWS says some services are unavailable on the Free plan and prompt an upgrade; I could not find a list of which, and this stack uses about 20 service types. A partial failure part-way through `apply` is messy. | Open. Decide on the upgrade (§5) **before** the first `apply`; you said not to upgrade now, so it is only prepared. |
-| B4 | **No keyless CLI login configured.** The CLI is installed (2.39.5) but not authenticated. | Open: needs an IAM user (free) and `aws login` (§4). |
+| B4 | Keyless CLI login. | **Cleared** (2026-11-10 user output; session re-verified valid 2026-11-13). Sessions are short-lived: re-run `aws login --profile ryucloud --remote` when it expires. |
+| B6 | **An AWS Organization exists** (found 2026-11-13, read-only). **Explained by the owner (user-reported):** while signing up, two "projects" were created that turned out to be separate accounts; to use IAM Identity Center the account was upgraded and an Organization was created with a second Google account as its manager. The root user of the management account ("Dreamin Management Account") hosts the IAM user `ryucloud-admin`. Verified read-only: feature set `ALL`; four accounts (management, `Dreamin Identity Delegated Admin`, `Big Ideas Live Here`, and the original `RyuCloud` account, now closed); an Identity Center instance exists in **us-east-1** with the delegated-admin account; root-level SCPs include a managed-account policy and a region policy that allows only us-east-1, us-east-2, us-west-2 and, in `us-west-2`, a 21-service allow-list **without** ECS, RDS, ELB, ECR, SQS or S3. | **Understood; one design consequence.** SCPs do not apply to the management account, so deploy RyuCloud **in this account** (a member account such as `Big Ideas Live Here` would be blocked by that allow-list). Unproven until a plan/apply. Do not modify the Organization, SCPs or the other accounts. Still to check in the console: Billing → Account plan, and root MFA. |
 | B5 | State bucket, CloudFront key pair, `backend.hcl`, `terraform.tfvars`, GitHub `production` environment | Open; each is a numbered step in §8. |
 
 ## 4. Authentication without root, access keys or Identity Center
@@ -115,58 +117,66 @@ Full list: [aws-audit.md](aws-audit.md). New in Phase 5:
   accessible; the default security group is emptied; the S3 gateway endpoint is free. No NAT, so tasks hold public IPs. No WAF.
 - **Account:** root has MFA; day-to-day access is an MFA-protected IAM user with no access keys; add CloudTrail once you go long-running.
 
-## 8. Phase 5 checklist
+## 8. Phase 5 checklist (in execution order)
 
-Each step has an exit test. Stop at any failed test. Steps marked **BILLS** cost money; **GATE** means wait for explicit approval.
+Legend: **[x]** done with evidence; **[u]** reported by the owner, not re-run by me; **[~]** partly done; **[ ]** not done. **GATE** = wait for explicit approval; **BILLS** = costs money.
+"Read-only 2026-11-13" evidence was gathered with AWS CLI Describe/List calls and `gh api` GETs in the repository session; details are in [verification.md](verification.md).
+Each step has an exit test. Stop at any failed test.
 
-**Step 0: Local preparation (free)**
-- [ ] Commit the preparation work (commands are in the handoff of the session that wrote this).
-- [ ] Optional: MinIO S3 integration test (see README "Running tests").
-- [ ] GitHub repository settings (browser): secret scanning + push protection on; Actions → General → "Require approval for all outside collaborators"; workflow
-  permissions "Read repository contents"; ruleset/branch protection on `main` requiring the CI checks; create the `production` environment restricted to `main`
-  (runbook step 10 commands). Exit: the read-back commands in step 10 show `main` only and a required reviewer.
+**Step 1: Domain and DNS (domain purchase BILLS yearly; zone BILLS $0.50/month)**
+- [x] Domain purchased (**[u]**, 2026-11-13). The name and registrar are not recorded in the repository (the name is not secret; it goes in the git-ignored `terraform.tfvars`).
+- [x] Read-only 2026-11-13: `route53domains list-domains` and `list-operations` are empty and `route53 list-hosted-zones` is empty. So the domain is **not registered through this account's Route 53** (registered elsewhere or in another account: unverified) and **no hosted zone exists**.
+- [ ] Create the public hosted zone for the name you will put in `domain_name` (GATE, $0.50/month; console or `aws route53 create-hosted-zone`). Keep it between sessions.
+- [ ] Delegation: put the zone's four `awsdns-` name servers at the registrar. Exit: `dig +short NS <domain>` lists them. (Registration is not delegation; it can take minutes to hours.)
+- [ ] Certificates: nothing to create by hand. Terraform requests two ACM certificates (the app host in `us-west-2`, `media.<host>` in `us-east-1`) and their DNS validation records; they validate during `apply` only if delegation works. Read-only 2026-11-13: no ACM certificates exist in either region.
+- Supported hostnames: `domain_name` may be the apex (`example.com`) or a subdomain (`ryucloud.example.com`). Media is `media.<domain_name>`. The signed-cookie domain is `domain_name` itself (`ecs.tf`, `config.go`).
 
-**Step 1: Account and authentication (free)**
-- [ ] Billing: create the account-level budget and alerts (§5).
-- [ ] Create the IAM group/user with MFA and no access keys (§4); sign out of root.
-- [~] `aws login --profile ryucloud`; `aws sts get-caller-identity` shows `user/ryucloud-admin` (**done 2026-11-10**, owner's output, account ID redacted); the `export-credentials` name check in §4 is **not yet run**.
-- [ ] `scripts/aws-terraform.sh version` prints `Terraform v1.10.5` (first real test of the wrapper).
+**Step 2: AWS account and billing readiness (free; upgrade is a GATE)**
+- [x] Read-only 2026-11-13: session valid; identity `user/ryucloud-admin` (non-root); profile region `us-west-2`; IAM user has an MFA device and **zero access keys**; group has `AdministratorAccess` and `SignInLocalDevelopmentAccess`.
+- [u] Earlier checks reported by the owner: `export-credentials` returned the four variable names; `scripts/aws-terraform.sh version` printed `Terraform v1.10.5`; `scripts/validate-terraform.sh` printed "Success! The configuration is valid."
+- [x] Read-only 2026-11-13: no application resources (no tagged resources in `us-west-2`; no S3 buckets, EC2 instances or Elastic IPs; no ACM certificates). The five tagged items in `us-east-1` are Organization policies and a payment instrument, not ours. Month-to-date cost reads $0 (shown as `-0`).
+- [ ] **Root MFA:** `iam get-account-summary` reported `AccountMFAEnabled = 0` (root keys: 0). This contradicts the earlier report. Verify in the console (Security credentials, signed in as root, or the account's root-access management page) and enable it if missing.
+- [~] **Account plan:** the owner upgraded to enable Identity Center (user-reported); not verifiable from the CLI (`freetier get-account-plan-state` returned "Missing data for account"). Read Billing and Cost Management → Account plan.
+- [x] **Organization (B6):** explained by the owner (user-reported); instance and accounts verified read-only. Do not create/join/leave/modify anything.
+- [ ] **Budgets:** none exist (read-only). Create $20 and $50 actual-spend budgets with email alerts (console or CLI, free), and enable billing alert preferences (not readable from the CLI). Cost Anomaly Detection has a default services monitor.
+- [ ] Upgrade decision (GATE): recommended before the first apply (B3). The upgrade charges nothing by itself.
 
-**Step 2: Upgrade decision (GATE, BILLS potentially)**
-- [ ] Read the Billing account-plan page. Decide whether to upgrade to Paid (recommended before apply; credits carry over). Do not enable Organizations.
+**Step 3: GitHub production-environment security (free)**
+- [x] Read-only 2026-11-13: repository is public; secret scanning and push protection are **enabled**; default workflow token permission is `read`; local work pushed and CI green on `9eff787`.
+- [ ] Fork-PR approval is `first_time_contributors`; set it to **require approval for all outside collaborators** (Settings → Actions → General).
+- [x] Ruleset on the default branch created by the owner and **verified read-only 2026-11-13** (`gh api`): active; blocks deletion and non-fast-forward (force) pushes; requires the 7 CI job checks; bypass for the repository-admin role (always), so direct pushes to `main` still work.
+- [ ] No `production` environment exists: create it, restrict to `main`, add yourself as required reviewer (runbook step 10 commands). Exit: the read-back commands there show `main` only and a reviewer.
+- [ ] Keep `github_repository` empty in `terraform.tfvars` until the above is verified (audit finding 1). The Deploy workflow is not needed for the first temporary sessions.
 
-**Step 3: Domain (GATE, BILLS)**
-- [ ] Choose and buy the domain (Route 53 registrar or another; yearly fee). Create the public hosted zone for the app name (about $0.50/month).
-- [ ] If the domain is registered elsewhere, add the zone's four NS records there. Exit: `dig +short NS <your name>` lists the `awsdns-` servers.
+**Step 4: Terraform remote-state bootstrap (GATE, about $0; runbook steps 2-3)**
+- [ ] State bucket in `us-west-2` (private, versioned, encrypted, public access blocked; needs `--create-bucket-configuration LocationConstraint=us-west-2`). Created by hand so `destroy` can never delete it.
+- [ ] CloudFront key pair under `~/.ryucloud/` (private key local only; `*.pem` is git-ignored everywhere); public key at `infra/terraform/cloudfront_public_key.pem`. Back the private key up.
 
-**Step 4: Bootstrap (runbook steps 2–4)**
-- [ ] State bucket in `us-west-2` (GATE; about $0). Needs `--create-bucket-configuration LocationConstraint=us-west-2`.
-- [ ] CloudFront key pair under `~/.ryucloud/` (local only). Private key never committed (`*.pem` is ignored everywhere).
-- [ ] `backend.hcl` and `terraform.tfvars` from the templates; `protect_data = false` for a temporary environment.
+**Step 5: Configure `backend.hcl` and `terraform.tfvars` (free; files are git-ignored)**
+- [ ] `backend.hcl` from the template (bucket, `us-west-2`); `terraform.tfvars` from the template: `domain_name`, `hosted_zone_id`, `alert_email`, `deploy_services = false`, `protect_data = false`, `monthly_budget_usd = 60`. Neither file exists yet (checked 2026-11-13).
 
-**Step 5: First plan, no apply (GATE: you approve each plan run)**
-- [ ] `tf init -backend-config=backend.hcl`, then `tf plan -out=tfplan`. Together review: nothing destroyed; resource count; and the audit's unverified items:
-  RDS `engine_version = "17"` accepted, CloudFront response-headers policy, ACM timing, ECS role-assumption condition, region is `us-west-2` on every regional resource.
-- [ ] Exit: plan reviewed and the estimated cost still matches §6.
+**Step 6: First reviewed plan (GATE: you approve each plan run; free, read-only against AWS)**
+- [ ] `tf init -backend-config=backend.hcl`, then `tf plan -out=tfplan`. Review together: no destroys; resource count; the audit's unverified items (RDS `engine_version = "17"`, CloudFront response-headers policy, ACM timing, ECS role-assumption condition, `us-west-2` on every regional resource); estimated cost still matches §6.
+- [x] Offline checks, **run 2026-11-13 by me, Terraform 1.10.5 in Docker**: `scripts/validate-terraform.sh` passed (`fmt -check`, `init -backend=false`, `validate`).
 
-**Step 6: First apply (GATE, BILLS ≈ $0.11/h plus fixed items)**
+**Step 7: First temporary apply (GATE, BILLS about $0.07/h infrastructure only)**
 - [ ] `deploy_services = false`; apply; confirm the SNS email; store the signing key in Secrets Manager (runbook step 5).
 
-**Step 7: Images, migrations, services (GATE, BILLS)**
-- [ ] Runbook steps 6–7; then `deploy_services = true` and apply.
+**Step 8: Images, migrations, services (GATE, BILLS about $0.12-0.16/h in total)**
+- [ ] Runbook steps 6-7 (`docker build --network host`); then `deploy_services = true` and apply.
 
-**Step 8: Cloud verification (runbook step 8)**
-- [ ] Health, readiness, frontend 200; register/upload/process/play; unsigned media request returns 403 both on CloudFront and directly on S3; `CloudFront-*` cookies; alarms and dashboard visible.
-- [ ] Record outputs in [verification.md](verification.md) (paste real output; update the Phase 5 table).
-- [ ] Optional: failure drills (kill a worker task; send a bad job to the DLQ) and a CI/CD run through the Deploy workflow.
+**Step 9: Real cloud end-to-end test (runbook step 8)**
+- [ ] Health, readiness, frontend 200; register/upload/process/play; unsigned media returns 403 on CloudFront and directly on S3; `CloudFront-*` cookies; alarms and dashboard visible.
+- [ ] Record real output in [verification.md](verification.md) and a row in [deployment-log.md](deployment-log.md); save redacted screenshots in `docs/evidence/`.
+- [ ] Optional: failure drills (kill a worker task; send a bad job to the DLQ).
 
-**Step 9: Teardown of a temporary environment (DESTRUCTIVE: deletes the database and all videos)**
-- [ ] `tf plan -destroy -out=destroy.tfplan`; read it; apply it only when you are sure. With `protect_data = false` from the start no extra apply is needed.
-- [ ] Check nothing is left: `aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=ryucloud --region us-west-2` (read-only), plus the console for the
-  load balancer, RDS and NAT/EIP pages. The state bucket, hosted zone, domain and the manual budget remain by design.
-- [ ] Run `scripts/aws-audit.sh` (read-only); it must report nothing left. See [temporary-deployment.md](temporary-deployment.md) §5.
+**Step 10: Teardown and residual-resource audit (DESTRUCTIVE: deletes the database and all videos)**
+- [ ] `tf plan -destroy -out=destroy.tfplan`; read it; apply it only when sure. With `protect_data = false` from the start no extra apply is needed.
+- [ ] `scripts/aws-audit.sh` reports nothing left (it is syntax-checked only; it has never been run against a live stack). Console double-check of load balancers, RDS, NAT/EIP, CloudFront. State bucket, hosted zone, domain and the manual budgets remain by design.
 - [ ] Next day: Billing → Cost Explorer; confirm daily cost is near zero.
 
-**Step 10: Production readiness (only for a long-running deployment)**
-- [ ] `protect_data = true`; restore test from an RDS snapshot; alarm drill; RDS CA bundle + `verify-full` (audit #3); CloudTrail; decide on Multi-AZ, WAF, S3 versioning (audit #2);
-  one week of cost data compared with §6; decide whether to keep it running.
+**Step 11: Final portfolio documentation**
+- [ ] Update [project-status.md](project-status.md), the Phase 5 table in [verification.md](verification.md) and [deployment-log.md](deployment-log.md) from real output only; add redacted screenshots; a short README section linking the architecture, the runbook and the teardown evidence.
+
+**Step 12: Production readiness (only for a long-running deployment)**
+- [ ] `protect_data = true`; restore test from an RDS snapshot; alarm drill; RDS CA bundle + `verify-full` (audit #3); CloudTrail; decide on Multi-AZ, WAF, S3 versioning (audit #2); one week of cost data compared with §6; decide whether to keep it running.
