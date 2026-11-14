@@ -82,6 +82,16 @@ tf plan -destroy -out=destroy.tfplan      # read it: only ryucloud resources; no
 tf apply destroy.tfplan                    # 10–20 min (CloudFront is the slow part)
 ```
 
+**Staged destroy (recommended; untested).** The 15-minute credential limit ([aws-runbook.md](aws-runbook.md) step 5) can cut a single
+destroy off during the CloudFront or RDS deletion. Run these in order, each with fresh credentials, then the full plan for the rest. If one
+fails with `ExpiredToken`, use the recovery in the runbook and re-run it:
+
+```bash
+tf apply -destroy -target=aws_cloudfront_distribution.media     # slowest
+tf apply -destroy -target=aws_db_instance.main
+tf plan -destroy -out=destroy.tfplan && tf apply destroy.tfplan  # everything else
+```
+
 4. **Audit** (read-only, free):
 
 ```bash

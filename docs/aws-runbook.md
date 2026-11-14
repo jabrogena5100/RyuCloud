@@ -104,8 +104,17 @@ tf apply tfplan
 ```
 
 Expect roughly 15–30 minutes: RDS and the CloudFront distribution are slow, and ACM waits for DNS validation.
-If certificate validation hangs, the hosted zone is not delegated to Route 53 yet. Commit the generated
+If certificate validation hangs, the hosted zone is not delegated to Route 53 yet: check with
+`dig +norec NS <domain> @ns01.trs-dns.com` that the registry lists the name servers of **your** zone (a domain registered through
+Route 53 gets its own default zone, which is not the one Terraform fills). Commit the generated
 `.terraform.lock.hcl` (it pins provider versions).
+
+**Credential limit:** `tf` passes fixed credentials into the container and `aws login` credentials last about 15 minutes. A single
+`apply` that runs longer fails with `ExpiredToken`, Terraform writes `errored.tfstate`, and a lock is left behind. If that happens:
+read the lock ID from the `.tflock` object in the state bucket, `tf force-unlock -force <ID>` (only when no Terraform is running),
+`tf state push errored.tfstate`, and check for tainted resources with `tf plan` (`tf untaint <address>` if the real resource is fine).
+To avoid it, apply in stages: `-target=aws_acm_certificate_validation.app -target=aws_acm_certificate_validation.media`, then
+`-target=aws_cloudfront_distribution.media`, then the full plan. (Verified 2026-11-14; see [verification.md](verification.md).)
 
 Then:
 
