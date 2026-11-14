@@ -183,6 +183,31 @@ func TestGrantPlaybackSetsScopedSecureCookies(t *testing.T) {
 	}
 }
 
+// Regression: the policy resource built by GrantPlayback must keep a literal "*". It was
+// once escaped to %2A, which CloudFront never matches, so every playlist and segment got 403.
+func TestGrantPlaybackPolicyKeepsLiteralWildcard(t *testing.T) {
+	p := testCloudFront(t)
+	rec := httptest.NewRecorder()
+	p.GrantPlayback(rec, "v1")
+
+	var policy string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "CloudFront-Policy" {
+			policy = c.Value
+		}
+	}
+	if policy == "" {
+		t.Fatal("no CloudFront-Policy cookie")
+	}
+	var parsed cfPolicy
+	if err := json.Unmarshal(cfDecode(t, policy), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Statement[0].Resource, "https://media.example.com/videos/v1/*"; got != want {
+		t.Errorf("policy resource = %q, want %q", got, want)
+	}
+}
+
 func TestNewPlaybackSelectsBackend(t *testing.T) {
 	p, err := NewPlayback(config.Config{PlaybackBackend: "api"}, "/api/v1")
 	if err != nil {

@@ -211,7 +211,10 @@ func (p *CloudFrontPlayback) ThumbnailURL(videoID string, objectKey *string) *st
 // to the media host and only for this video.
 func (p *CloudFrontPlayback) GrantPlayback(w http.ResponseWriter, videoID string) {
 	expires := p.now().Add(p.playbackTTL)
-	cookies, err := p.signer.SignedCookies(p.objectURL(VideoPrefix(videoID)+"*"), expires)
+	// The wildcard must stay a literal "*": building this through url.URL would escape it to
+	// %2A, and CloudFront would then match the policy against a path that contains "%2A".
+	resource := "https://" + p.domain + "/" + VideoPrefix(videoID) + "*"
+	cookies, err := p.signer.SignedCookies(resource, expires)
 	if err != nil {
 		if p.OnError != nil {
 			p.OnError(videoID, err)
