@@ -9,10 +9,10 @@ Placeholders look like `REPLACE_ME` and are explained where they appear.
 
 ## 0. Prerequisites (once)
 
-- An AWS account with billing alerts enabled and an MFA-protected IAM user (logged in with `aws login`, no access keys; IAM Identity Center is not available on this account, see [phase5-plan.md](phase5-plan.md)) that can create IAM roles,
+- An AWS account with billing alerts enabled and an MFA-protected IAM user (logged in with `aws login`, no access keys; IAM Identity Center is not available on this account and an Organization already exists, see [phase5-plan.md](phase5-plan.md)) that can create IAM roles,
   VPCs, RDS, S3, CloudFront, ECS, ECR, SQS, ACM, Route 53 records, Secrets Manager and Budgets.
 - A **domain you control with a public Route 53 hosted zone** whose name servers are already delegated at the
-  registrar. Pick a host name for the app, e.g. `ryucloud.example.com`; media will be `media.ryucloud.example.com`.
+  registrar. (Status 2026-11-13: domain purchased, hosted zone and delegation not yet done; see [phase5-plan.md](phase5-plan.md) step 1.) Pick a host name for the app, e.g. `ryucloud.example.com`; media will be `media.ryucloud.example.com`.
   (Signed cookies cannot work on `*.cloudfront.net`/`*.amazonaws.com` host names.)
 - Installed on the VM: Docker, AWS CLI v2, `jq`, `openssl`. Region, domain choices and AWS CLI / IAM Identity Center
   setup are in [aws-setup.md](aws-setup.md).

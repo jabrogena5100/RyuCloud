@@ -6,12 +6,14 @@ Order: account hygiene → AWS CLI → keyless login → domain → the two conf
 
 ## 1. Account hygiene (console, once)
 
-- **MFA on the root user** (done). Do not use root for daily work and do not create root access keys.
+- **Root protection:** the account was created by signing in with a Google account, so root is protected by that Google account's 2-Step Verification (mobile app; user-reported 2026-11-14), not by an AWS MFA device. Do not use root for daily work and do not create root access keys.
 - Billing → **Billing preferences**: enable free-tier usage alerts and billing alert emails.
 - Billing → **Budgets**: create an account-level budget by hand (the first two are free), e.g. alerts at $20 and $50 actual. The budget in
   Terraform is destroyed with the stack, so it cannot be your only protection.
-- Do **not** enable AWS Organizations or IAM Identity Center. On a Free-plan account, creating or joining an Organization upgrades the
-  account and ends credit eligibility; Identity Center is currently unavailable on this account (phase5-plan B1).
+- Do **not** create or join an AWS Organization, and do not activate IAM Identity Center. On a Free-plan account, creating or joining an Organization upgrades the
+  account and ends credit eligibility; Identity Center is unavailable on this account (phase5-plan B1).
+  **Update 2026-11-13:** the owner upgraded the account and created an Organization (user-reported); this account is its management account and an Identity Center instance exists in us-east-1 (read-only check; phase5-plan B6). Keep using the IAM user + `aws login` below; do not change the Organization.
+- Root MFA: `aws iam get-account-summary` returns `AccountMFAEnabled: 0` (2026-11-13). That is expected: it counts only AWS-registered MFA devices. The IAM dashboard shows 0 security recommendations (owner, 2026-11-14), consistent with a Google-federated root. Inferred, not proven; no AWS MFA device is needed.
 
 ## 2. Install AWS CLI v2 (VM; done, 2.39.5)
 
@@ -55,21 +57,21 @@ Decided. Use the **same** region in `terraform.tfvars` (`aws_region`; it is also
 `us-east-1` automatically. Do not change region after the first apply (everything would be re-created). Create the state bucket in `us-west-2`
 with `--create-bucket-configuration LocationConstraint=us-west-2`.
 
-## 5. Domain (not purchased yet; required before any apply)
+## 5. Domain (purchased 2026-11-13, user-reported; hosted zone, delegation and certificates still open)
 
 The app needs a real domain: signed CloudFront cookies cannot work on `*.cloudfront.net` or the load balancer's own name. You need a **public
 Route 53 hosted zone that contains the app name**.
 
 | Situation | Approach | Cost |
 | --- | --- | --- |
-| No domain yet (your case) | Buy one. Registering in Route 53 keeps the zone and registration together; other registrars work if you delegate the name servers. Use a subdomain such as `ryucloud.<yourdomain>` for the app. | A yearly fee that varies by TLD (check the price at checkout) + $0.50/month for the zone |
+| Domain bought elsewhere or in this account (your case: bought, but **not** in this account's Route 53 as of 2026-11-13) | (Was: buy one.) Registering in Route 53 keeps the zone and registration together; other registrars work if you delegate the name servers. Use a subdomain such as `ryucloud.<yourdomain>` for the app. | A yearly fee that varies by TLD (check the price at checkout) + $0.50/month for the zone |
 | You own a domain at another registrar | **Delegate a subdomain**: create a hosted zone for `ryucloud.example.com` in Route 53, add its four NS records at your registrar. | Zone $0.50/month |
 
-Buying a domain and creating the hosted zone are charged actions and are **not done**. After delegation, check:
+The domain purchase is done (user-reported). Registration, the hosted zone, delegation and ACM validation are four separate things: read-only checks on 2026-11-13 found **no hosted zone and no registration in this account's Route 53**, so the zone is **not created** (a charged action, $0.50/month) and delegation is **not done**. `domain_name` can be the apex (`example.com`) or `ryucloud.example.com`; media is `media.<domain_name>`. After delegation, check:
 ```bash
 dig +short NS ryucloud.example.com        # must list the four awsdns-* servers of your hosted zone
 ```
-Domain registration may also be restricted on the Free plan (unverified); see phase5-plan §5.
+If the registrar is external, create the hosted zone in Route 53 (`aws route53 create-hosted-zone --name <domain> --caller-reference "$(date +%s)"`, a charged action, $0.50/month) and enter the four name servers it lists (`aws route53 get-hosted-zone --id <ZONE_ID> --query DelegationSet.NameServers`) at the registrar. ACM certificates are requested by Terraform during `apply`; nothing to do by hand.
 
 ## 6. The two config files (git-ignored; templates are committed)
 

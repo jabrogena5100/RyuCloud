@@ -36,12 +36,12 @@ the media bucket and ECR repositories force-delete their contents, and the secre
 
 ## 3. One-time setup (before the first session)
 
-1. **Billing (free, root user):** create two budgets, $20 and $50 actual spend, email alerts; turn on billing alert preferences; upgrade to the Paid plan (Billing → Account plan; credits carry over). [phase5-plan.md §5](phase5-plan.md).
-2. **Login:** `aws login --profile ryucloud --remote`, `export AWS_PROFILE=ryucloud`, then `scripts/aws-terraform.sh version` prints `Terraform v1.10.5`.
-3. **Domain and hosted zone (billable, one time per year):** see §8. Exit test: `dig +short NS <your domain>` lists `awsdns-` servers.
+1. **Billing (free, root user):** create two budgets, $20 and $50 actual spend, email alerts (**none exist as of 2026-11-13**); turn on billing alert preferences; upgrade to the Paid plan (Billing → Account plan; credits carry over). Root MFA needs no action (Google-federated root; see aws-setup.md §1). Also review the Organization (phase5-plan B6). [phase5-plan.md §5](phase5-plan.md).
+2. **Login (done; user-reported, session re-checked valid 2026-11-13):** `aws login --profile ryucloud --remote`, `export AWS_PROFILE=ryucloud`, then `scripts/aws-terraform.sh version` prints `Terraform v1.10.5`.
+3. **Domain (purchased 2026-11-13, user-reported) and hosted zone (not created; $0.50/month):** see §8. Registration, zone creation, delegation and certificate validation are separate steps. Exit test: `dig +short NS <your domain>` lists `awsdns-` servers.
 4. **State bucket, key pair, config files:** [aws-runbook.md](aws-runbook.md) steps 2–4. In `terraform.tfvars` keep `protect_data = false`, `deploy_services = false`, `monthly_budget_usd = 60`.
-5. **GitHub settings** ([phase5-plan.md](phase5-plan.md) step 0). Leave `github_repository` empty until audit finding 1 is closed.
-6. `terraform plan` reviewed once with the owner (plan step 5). No apply before explicit approval.
+5. **GitHub settings** ([phase5-plan.md](phase5-plan.md) step 3; secret scanning and push protection are already on, the rest is open). Leave `github_repository` empty until audit finding 1 is closed.
+6. `terraform plan` reviewed once with the owner (phase5-plan step 6). No apply before explicit approval.
 
 ## 4. Starting a session (billing starts at apply)
 
@@ -130,7 +130,7 @@ seven-day run adds about $20–27. Credits (Free plan, up to $200) pay for usage
 
 ## 8. Buy the domain now or later?
 
-**Recommendation: buy it now.** Deferring does not make a session cheaper, it makes a *full* session impossible: ACM certificates, the ALB's HTTPS listener,
+**Decision: bought on 2026-11-13 (user-reported).** The reasoning for buying before the first session, kept for the record: **buy it now.** Deferring does not make a session cheaper, it makes a *full* session impossible: ACM certificates, the ALB's HTTPS listener,
 the CloudFront alias and the signed cookies (which cannot work on `*.cloudfront.net` or the load balancer's name) all need a domain in a Route 53 zone
 ([phase5-plan.md](phase5-plan.md) blocker B2). Without it you could run only a partial test, which does not prove the architecture. Deferring saves
 the yearly fee only for as long as you also forgo AWS verification.

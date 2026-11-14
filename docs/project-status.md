@@ -1,6 +1,6 @@
 # Project status (handoff)
 
-Last updated 2026-11-10. Evidence for every claim is in [verification.md](verification.md); this file says where the project stands.
+Last updated 2026-11-14. Evidence for every claim is in [verification.md](verification.md); this file says where the project stands.
 
 ## Maturity levels
 
@@ -8,7 +8,7 @@ Last updated 2026-11-10. Evidence for every claim is in [verification.md](verifi
 | --- | --- |
 | **Locally complete** | **Yes.** API, auth, direct-to-storage uploads, Redis queue, FFmpeg/HLS worker, crash recovery, retries, health/readiness, Next.js frontend and Compose stack all work; tests and E2E scripts pass (re-run 2026-11-10). |
 | **Cloud-ready** | **Mostly.** Terraform formats and validates offline (1.10.5), workflows and scripts pass static checks, runbook commands corrected. Not proven by a real `plan`. |
-| **Cloud-verified** | **No.** Nothing has been planned, applied or deployed. |
+| **Cloud-verified** | **Partly (2026-11-14).** The infrastructure applied (`deploy_services = false`): certificates issued, CloudFront deployed, RDS and ALB up, SNS confirmed. No images, migrations, running tasks or end-to-end checks yet. |
 | **Production-ready** | **No.** Needs the live checks in [phase5-plan.md](phase5-plan.md) §8 (restore test, alarm drill, one week of cost data). |
 
 ## Done this session
@@ -29,8 +29,9 @@ Last updated 2026-11-10. Evidence for every claim is in [verification.md](verifi
 
 ## Blocked on you (not done, not authorised)
 
-1. Domain purchase + Route 53 zone (B2). 2. AWS account upgrade decision (B3). 3. IAM admin user + `aws login` (B4). 4. State bucket, signing key, `backend.hcl`, `terraform.tfvars`. 5. GitHub settings (secret scanning, branch protection, `production` environment). 6. Every `plan`/`apply`/deploy.
+Done (2026-11-14, see verification.md): domain registered in this account, delegation corrected, certificates issued, state bucket, key pair and config files, reviewed plan, first apply with `deploy_services = false`. **Still open from that apply:** store the CloudFront signing key in Secrets Manager. The stack is running and billing until destroyed. Remaining, in order ([phase5-plan.md](phase5-plan.md) §8; items 1, 3-5 below are historical):
+1. Hosted zone, delegation, ACM (done). 2. Account readiness: (root MFA resolved: Google-federated root, no AWS device needed) confirm account plan in Billing, budgets (the Organization is explained, B6). 3. GitHub `production` environment, branch protection, fork-PR approval. 4. State bucket, signing key. 5. `backend.hcl`, `terraform.tfvars`. 6. Every `plan`/`apply`/deploy.
 
 ## Next action
 
-Commit the local work (commands in the session handoff), then start [phase5-plan.md](phase5-plan.md) step 1 (account/authentication, free).
+Store the signing key (runbook step 5), build and push the images (step 6), migrate and start the services (step 7), verify (step 8), then destroy and audit ([temporary-deployment.md](temporary-deployment.md) §5).

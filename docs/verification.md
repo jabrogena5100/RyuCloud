@@ -87,19 +87,19 @@ decisions, blockers and checklist are in [phase5-plan.md](phase5-plan.md). Each 
 | `export-credentials` returned the four credential variable names | **User-reported OK** (not re-run) |
 | `scripts/aws-terraform.sh version` printed `Terraform v1.10.5` | **User-reported OK** (not re-run) |
 | `scripts/validate-terraform.sh` -> "Success! The configuration is valid." | **User-reported OK**; **re-run by me 2026-11-13: OK** (`fmt -check`, `init -backend=false`, `validate`, Terraform 1.10.5 in Docker) |
-| Domain purchased | **User-reported** 2026-11-13. Not verifiable from this account: not in Route 53 Domains (below) |
-| Hosted zone created / DNS delegated / ACM certificates validated | **Not done** (no zone exists; no ACM certificates exist) |
+| Domain purchased | **Run: OK (read-only 2026-11-14).** `ryucloud.link` is registered in this account through Route 53 Registered Domains (operation `REGISTER_DOMAIN` SUCCESSFUL 2026-11-13, auto-renew on, registrar Amazon Registrar, Inc.). The 2026-11-13 "not in Route 53 Domains" check predated the purchase |
+| Hosted zone created / DNS delegated / ACM certificates validated | **Run: OK 2026-11-14, after a correction.** Registration had auto-created a second zone (`Z0643148213GS3EMMVPXZ`, NS+SOA only) and the `.link` registry delegated to it, not to the Terraform zone (`Z0668781RUBVP8SUNHZQ`); the earlier "delegation verified" was wrong (a local resolver showed the Terraform zone's servers, the registry did not). Fixed with `route53domains update-domain-nameservers` (operation SUCCESSFUL 2026-11-14 02:09 UTC); the registry then listed the four Terraform-zone servers. Both certificates are `ISSUED` (`us-west-2` app, `us-east-1` media). The unused second zone still exists |
 | Account plan (Free vs Paid) | **Unverified**: not readable from the CLI; check Billing → Account plan |
-| Root MFA on | **Reported on by the owner, but the IAM account summary says off (`AccountMFAEnabled: 0`)**: verify in the console |
+| Root MFA | **No AWS MFA device (`AccountMFAEnabled: 0`), expected:** root signs in through a Google account protected by Google 2-Step Verification (user-reported 2026-11-14). The IAM dashboard shows 0 security recommendations (owner-pasted). Inferred, not proven from the CLI |
 | AWS Organization | **Found read-only; explained by the owner (user-reported)**: created when upgrading to use Identity Center; this account is the management account (below) |
 | IAM Identity Center | **Instance exists in `us-east-1`** (read-only; none in us-east-2/us-west-2), delegated admin account present. The 2026-11-06 "not available" message predates the upgrade (user-reported) |
 | Account-level budgets / billing alerts | **No budgets exist** (read-only); alert preferences unverifiable from the CLI |
 | Account upgrade to Paid plan | Not done, not authorised |
-| Terraform state bucket created; CloudFront key pair; `backend.hcl`; `terraform.tfvars` | Not done (files absent) |
-| `terraform plan` reviewed (including the audit's unverified items) | Not done |
-| `terraform apply` (first, `deploy_services = false`) | Not done, not authorised |
-| Images pushed, migrations run, services started | Not done, not authorised |
-| Cloud checks: runbook step 8 (health, playback, private-media 403s, alarms, SNS confirmation) | Not done |
+| Terraform state bucket created; CloudFront key pair; `backend.hcl`; `terraform.tfvars` | **Run: OK (read-only 2026-11-14).** Bucket exists in `us-west-2`, versioning on, AES256, all four public-access blocks on; the three files and the private key exist locally (private key mode 600) |
+| `terraform plan` reviewed (including the audit's unverified items) | **Run: OK (owner output, 2026-11-14):** `115 to add, 0 to change, 0 to destroy`, reviewed by me: no destroys, `db.t4g.micro`, `multi_az = false`, `engine_version = "17"`, no NAT/WAF |
+| `terraform apply` (first, `deploy_services = false`) | **Run: OK, but needed recovery (owner output, 2026-11-14).** Two runs failed with `ExpiredToken` partway (see "First apply: what went wrong" below); the state was recovered with `state push errored.tfstate`. Final apply: `22 added, 1 changed, 0 destroyed` (the change: `rds.force_ssl` apply method on the parameter group). Outputs include `app_url`, `media_url`, `ecs_cluster`, three ECR repositories |
+| Images pushed, migrations run, services started | Not done. ECS services exist with 0 desired tasks (read-only 2026-11-14) |
+| Cloud checks: runbook step 8 (health, playback, private-media 403s, alarms, SNS confirmation) | **Partly.** Read-only 2026-11-14: CloudFront `Deployed` (alias `media.ryucloud.link`), RDS `available` (`db.t4g.micro`, single-AZ, not publicly accessible, encrypted, no deletion protection), ALB `active` internet-facing with two public IPv4 addresses (its own), no NAT gateway or WAF, SNS subscription confirmed (full ARN, not `PendingConfirmation`). **Not done:** CloudFront signing key not yet stored in Secrets Manager (secret has no version); health, playback and 403 checks need running tasks |
 | GitHub: secret scanning + push protection | **Run: enabled** (read-only 2026-11-13) |
 | GitHub: branch ruleset on the default branch | **Run: OK 2026-11-13** (active; no deletion, no force-push; 7 required CI checks; admin bypass) |
 | GitHub: `production` environment restricted to `main` (audit finding 1), fork-PR approval for all outside collaborators | Not done (no environment as of 2026-11-13; fork approval last seen as `first_time_contributors`) |
@@ -107,6 +107,14 @@ decisions, blockers and checklist are in [phase5-plan.md](phase5-plan.md). Each 
 | `scripts/aws-audit.sh` | Written and syntax-checked; never run against a live stack |
 | Teardown rehearsal (`destroy`, then the audit shows nothing left) | Not done |
 | Production readiness: backups/restore test, alarms fired once, cost check after one week | Not done |
+
+### First apply: what went wrong (2026-11-14, from owner-pasted output)
+
+- **Expired credentials.** `scripts/aws-terraform.sh` exports the `aws login` credentials once and passes them into the container as fixed values; they last about 15 minutes. The first apply ran past that while creating the RDS instance and waiting for ACM: S3 state uploads failed with `ExpiredToken`, Terraform wrote `errored.tfstate`, and the lock was left behind. A second targeted apply (CloudFront) failed the same way after 12+ minutes waiting for certificate validation.
+- **Recovery used:** read the lock ID from the `.tflock` object, `terraform force-unlock` (no Terraform container was running), `terraform state push errored.tfstate`, `terraform untaint aws_db_instance.main` (the RDS instance was `available` in AWS; replacing it would have deleted a working database), then staged applies.
+- **Tried and rejected:** an opt-in mode that mounts `~/.aws` so the provider refreshes the `aws login` profile. The container's S3 backend failed with "No valid credential sources found" (EC2 metadata lookup), so the change was reverted.
+- **Real cause of the long wait:** the delegation mismatch above (certificates could never validate).
+- **Consequence for the runbook:** any single `apply` or `destroy` must finish inside about 15 minutes of fixed credentials; apply in stages (certificates, CloudFront, the rest) and expect CloudFront deletion (10-20 minutes) to be the risk at teardown. Not yet written into the runbook.
 
 ### Pre-deployment readiness checks (2026-11-13, read-only, run by me with profile `ryucloud`)
 
@@ -116,7 +124,7 @@ Account IDs, ARNs and the account owner's email are redacted or omitted. Account
 | --- | --- |
 | `sts get-caller-identity` | Valid session; ARN ends `user/ryucloud-admin` (not root). Profile region `us-west-2` |
 | IAM user | MFA device registered; 0 access keys; group `ryucloud-admins` has `AdministratorAccess`, `SignInLocalDevelopmentAccess` |
-| `iam get-account-summary` | `AccountMFAEnabled: 0`, `AccountAccessKeysPresent: 0` (root) |
+| `iam get-account-summary` | `AccountMFAEnabled: 0` (expected for a Google-federated root, see above), `AccountAccessKeysPresent: 0` (root) |
 | `route53domains list-domains` / `list-operations` (us-east-1) | Both empty |
 | `route53 list-hosted-zones` | Empty |
 | `acm list-certificates` (us-west-2, us-east-1) | 0 and 0 |

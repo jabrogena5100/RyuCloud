@@ -13,7 +13,7 @@ The account plan could not be verified from the CLI and no budgets exist yet. Th
 | Domain | **Purchased 2026-11-13** (user-reported; name and registrar are not recorded in the repository). Registration is only the first part of blocker B2: hosted zone, DNS delegation and ACM validation are still open. |
 | Alert email | A personal address (value stays out of the repository). |
 | GitHub | Public repository, GitHub Free plan. |
-| AWS account | The account this profile uses is the **Organization management account** ("Dreamin Management Account"); the owner upgraded the plan to enable IAM Identity Center (user-reported 2026-11-13; plan not verifiable from the CLI, confirm in Billing). Root MFA was reported on, but `iam get-account-summary` returned `AccountMFAEnabled: 0`: check in the console (step 2). |
+| AWS account | The account this profile uses is the **Organization management account** ("Dreamin Management Account"); the owner upgraded the plan to enable IAM Identity Center (user-reported 2026-11-13; plan not verifiable from the CLI, confirm in Billing). Root signs in through Google (2-Step Verification on the Google account, user-reported 2026-11-14), so `iam get-account-summary` returning `AccountMFAEnabled: 0` is expected and no AWS MFA device is needed. |
 | Terraform | 1.10.5 in Docker (`scripts/aws-terraform.sh`), the same version as CI. |
 | Development model | **Hybrid** (below). |
 | Deployment strategy (2026-11-13) | **Temporary sessions only**, no 24/7 until job-search time. Procedure, retain/destroy table, costs for 8 h / 24 h / 7 d, domain advice and the post-destroy audit are in [temporary-deployment.md](temporary-deployment.md); session evidence goes in [deployment-log.md](deployment-log.md). |
@@ -115,7 +115,7 @@ Full list: [aws-audit.md](aws-audit.md). New in Phase 5:
 - **Network (read from `network.tf`, `alb.tf`, `rds.tf`):** the ALB accepts 80/443 from the internet and can send only to the app ports; the tasks accept only the ALB's
   security group and send only HTTPS (anywhere) and PostgreSQL (to the DB group); the database accepts only the tasks, sits in route-less subnets and is not publicly
   accessible; the default security group is emptied; the S3 gateway endpoint is free. No NAT, so tasks hold public IPs. No WAF.
-- **Account:** root has MFA; day-to-day access is an MFA-protected IAM user with no access keys; add CloudTrail once you go long-running.
+- **Account:** root is Google-federated and protected by Google 2-Step Verification (no AWS MFA device); day-to-day access is an MFA-protected IAM user with no access keys; add CloudTrail once you go long-running.
 
 ## 8. Phase 5 checklist (in execution order)
 
@@ -135,7 +135,7 @@ Each step has an exit test. Stop at any failed test.
 - [x] Read-only 2026-11-13: session valid; identity `user/ryucloud-admin` (non-root); profile region `us-west-2`; IAM user has an MFA device and **zero access keys**; group has `AdministratorAccess` and `SignInLocalDevelopmentAccess`.
 - [u] Earlier checks reported by the owner: `export-credentials` returned the four variable names; `scripts/aws-terraform.sh version` printed `Terraform v1.10.5`; `scripts/validate-terraform.sh` printed "Success! The configuration is valid."
 - [x] Read-only 2026-11-13: no application resources (no tagged resources in `us-west-2`; no S3 buckets, EC2 instances or Elastic IPs; no ACM certificates). The five tagged items in `us-east-1` are Organization policies and a payment instrument, not ours. Month-to-date cost reads $0 (shown as `-0`).
-- [ ] **Root MFA:** `iam get-account-summary` reported `AccountMFAEnabled = 0` (root keys: 0). This contradicts the earlier report. Verify in the console (Security credentials, signed in as root, or the account's root-access management page) and enable it if missing.
+- [x] **Root MFA:** `AccountMFAEnabled = 0` (root keys: 0) is expected: root signs in through Google, protected by Google 2-Step Verification (user-reported 2026-11-14); the IAM dashboard shows 0 security recommendations. No AWS MFA device needed. Inferred, not proven from the CLI.
 - [~] **Account plan:** the owner upgraded to enable Identity Center (user-reported); not verifiable from the CLI (`freetier get-account-plan-state` returned "Missing data for account"). Read Billing and Cost Management → Account plan.
 - [x] **Organization (B6):** explained by the owner (user-reported); instance and accounts verified read-only. Do not create/join/leave/modify anything.
 - [ ] **Budgets:** none exist (read-only). Create $20 and $50 actual-spend budgets with email alerts (console or CLI, free), and enable billing alert preferences (not readable from the CLI). Cost Anomaly Detection has a default services monitor.
