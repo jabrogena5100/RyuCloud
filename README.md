@@ -3,7 +3,7 @@
 A cloud-native, YouTube-style video platform built as a software-engineering and
 AWS portfolio project.
 
-**Status: Phase 4 (AWS infrastructure, prepared but not deployed).** Accounts, channels, direct-to-storage
+**Status: Phase 4 (is deployed).** Accounts, channels, direct-to-storage
 uploads and background HLS transcoding still run locally on Docker Compose exactly as before (MinIO, Redis, the Go
 worker). Phase 4 adds the code and configuration to run the same app on AWS: Terraform for the VPC, ALB, ECS Fargate
 services, RDS PostgreSQL, private S3, CloudFront (Origin Access Control + signed cookies/URLs), SQS with a dead-letter
